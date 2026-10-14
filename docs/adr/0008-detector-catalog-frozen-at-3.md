@@ -1,0 +1,3 @@
+# v1 detector catalog frozen at 3 behind a BugDetector plugin interface
+
+v1 ships exactly three detectors — `DeadClickDetector`, `SilentApiErrorDetector`, `RageClickDetector` — chosen for near-zero false positives and coverage of the most common AI-generated/internal-tool bugs. Fuzzier heuristics (form abandonment, nav loops, console floods) were rejected for v1 to keep the "What Happened" section trustworthy. Extensibility is preserved via a stable `BugDetector` interface (`onEvent(event, recentWindow) => DiagnosticFinding | null`); the Story Engine consumes `DiagnosticFinding[]`, so future or custom detectors register in ~20 lines with no core rewrites.

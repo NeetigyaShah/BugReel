@@ -1,0 +1,3 @@
+# Record-by-default capture behind a two-stage Privacy Firewall
+
+Input values are captured by default — masked-everything reports destroy the Story's usefulness — but pass through a deterministic two-stage firewall. Stage 1 (main thread, before an event leaves the element) blocks password/hidden/file inputs, `autocomplete` cc/password/OTP fields, `data-bugreel="mask"`/`data-sensitive` subtrees, and name/id/placeholder/label matches against a sensitive-keyword pattern. Stage 2 (worker, before the ring buffer) regex-scrubs auth headers, JWTs, card/SSN shapes, secret prefixes, and masks emails/phones (configurable). `privacyMode: 'strict'` flips to character-length-only value logging for high-compliance installs; `data-bugreel="allow"` whitelists safe fields.

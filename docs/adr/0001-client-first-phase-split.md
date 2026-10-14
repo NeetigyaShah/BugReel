@@ -1,0 +1,3 @@
+# v1 ships the client SDK only; backend is Phase 2
+
+The monorepo ships in two phases. Phase 1 (v1) is the complete standalone client SDK — Modes 1 & 2 (offline IndexedDB + copy/download `.bugpack`, and direct Slack/Discord webhook) — plus the demo playground. Phase 2 is the self-hosted `/_bugreel` backend (FastAPI + SQLite + dedup + tracker adapters + console), built as a pure consumer of the `.bugpack` v1.0 JSON schema frozen in Phase 1. Rationale: the widget alone is a 100% functional product, and locking the payload contract first makes the backend a pure consumer with no integration glue. `packages/server` is scaffolded around the frozen payload type but carries no implementation.

@@ -1,0 +1,3 @@
+# Three-chunk split loading to honor the <4KB sensor claim
+
+One Rollup/tsup build produces both the CDN IIFE/UMD bundle and the ESM/CJS npm package, split into three chunks: (1) `bugreel-loader` (<3.5KB gzipped) — passive listeners, fetch/XHR/console wrappers, dead/rage-click timers, and a `preWorkerQueue`; (2) the worker + Story Engine, instantiated lazily after first paint; (3) the Shadow DOM modal, dynamically imported only when a report is triggered. The "<4KB sensor" claim in all positioning refers to Chunk 1 only — most sessions never download Chunk 3 at all. Script-tag installs auto-init via `data-*` attributes; npm installs call `initBugReel({...})`.

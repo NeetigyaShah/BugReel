@@ -1,0 +1,3 @@
+# Deterministic timeline player; explicitly no DOM replay
+
+The `.bugpack` player is an event-log + state timeline scrubber (typed event nodes over the 60-second window, with a per-node inspector showing the plain-English moment, DOM target metadata, and synchronized network/console state). Full DOM mutation replay (rrweb-class) was explicitly rejected: 50–100KB+ of serializer, main-thread jank on heavy pages, multi-megabyte payloads that break webhook limits, and a large privacy surface. Visual proof comes from the Snapshot, the Reporter's annotated media, and the opt-in screen recording — not from replaying the DOM.

@@ -1,0 +1,3 @@
+# .bugpack is a STORE-mode ZIP assembled by hand in the worker
+
+A `.bugpack` is a standard ZIP archive (`report.json` + `report.md` + `media/`) written by a ~90-line CRC32/ZIP-header builder inside the worker — no jszip/fflate dependency. Compression method is `STORE` (0): PNG/JPEG/WebM are already compressed formats, so deflate buys nothing while adding a real dependency to the worker chunk. Rejected: base64-in-JSON (+33% bloat, memory spikes on video) and self-contained HTML polyglots (payload no longer cleanly ingestible by the Phase-2 backend, which reads it with Python's stdlib `zipfile` in ~3 lines).

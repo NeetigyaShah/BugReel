@@ -1,0 +1,3 @@
+# Trigger policy: keyboard-first, environment-smart pill, opt-in shake
+
+Default hotkey is `Ctrl+Shift+B`/`Cmd+Shift+B` (rebindable, `Ctrl+B` supported) with an editable-focus guard so it never fires inside inputs/textareas/contentEditable. `<bugreel-pill>` defaults to `'auto'` — visible on localhost/dev/`?bugreel=1`, hidden on production unless opted in. Mobile shake is opt-in (`shake: true`); on iOS 13+ the SDK defers `DeviceMotionEvent.requestPermission()` to the user's first natural tap, since it only succeeds inside a direct gesture. `BugReel.open()` is exposed for custom entry points. Rationale: a bug reporter that breaks "bold" in a text editor or pops a permission dialog unprompted gets uninstalled; the defaults make the SDK invisible until wanted.

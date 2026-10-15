@@ -27,7 +27,7 @@
     <script>
       window.__report = undefined;
       document.addEventListener('bugreel:report', (e) => {
-        window.__report = e.detail;
+        window.__report = e.detail?.report;
       });
       document.getElementById('btn').addEventListener('click', () => {
         document.body.insertAdjacentHTML('beforeend', '<div id="out">done</div>');

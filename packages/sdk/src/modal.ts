@@ -259,7 +259,16 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
   let packTimer: ReturnType<typeof setTimeout> | undefined;
   let compileTimer: ReturnType<typeof setTimeout> | undefined;
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
-  const store = deps.store === undefined ? createReportStore(win.indexedDB) : deps.store;
+  // `window.indexedDB` itself can throw in sandboxed/restricted contexts —
+  // a storage feature must never take the whole modal down with it.
+  const store = ((): ReportStore | undefined => {
+    if (deps.store !== undefined) return deps.store ?? undefined;
+    try {
+      return createReportStore(win.indexedDB);
+    } catch {
+      return undefined;
+    }
+  })();
   const download = deps.download ?? downloadBytes;
   const cleanups: Array<() => void> = [];
 
@@ -307,9 +316,12 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
 
   const gate = (): void => {
     const filled = !!(answers().tryingToDo && answers().wentWrong);
-    for (const b of buttons) {
+    for (const [i, b] of buttons.entries()) {
       try {
-        if (b) b.disabled = !filled || phase === 'submitting';
+        // Only submit stays gated once 'submitted' — copy/download must keep
+        // working so the reporter can still take the artifact away.
+        const submitted = phase === 'submitted' && i === 3;
+        if (b) b.disabled = !filled || phase === 'submitting' || submitted;
       } catch {}
     }
   };
@@ -523,8 +535,10 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
   };
 
   const onReport = guard((detail: unknown): void => {
-    if (!detail || typeof detail !== 'object') return;
-    report = detail as BugReelReport;
+    // Replies arrive whole — the report rides `detail.report`.
+    const r = (detail as { report?: unknown })?.report;
+    if (!r || typeof r !== 'object') return;
+    report = r as BugReelReport;
     if (phase === 'loading') setPhase('ready');
     if ((el.style as { display?: string }).display !== 'none') renderPreview();
   });
@@ -546,12 +560,17 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
   });
 
   const onWorkerError = guard((detail: unknown): void => {
-    const message = (detail as { message?: unknown })?.message;
-    if (pendingPack) {
+    const d = detail as { requestId?: unknown; message?: unknown };
+    // Only an error for OUR pack cancels the pending download — an unrelated
+    // failed compile must not drop an in-flight pack reply.
+    if (pendingPack && (d?.requestId === undefined || d.requestId === pendingPack)) {
       pendingPack = undefined;
       clearTimeout(packTimer);
     }
-    setStatus(`Report pipeline error${typeof message === 'string' ? `: ${message}` : ''}`, true);
+    setStatus(
+      `Report pipeline error${typeof d?.message === 'string' ? `: ${d.message}` : ''}`,
+      true,
+    );
   });
 
   const onKeydown = guard((e: { key?: string }): void => {
@@ -633,6 +652,14 @@ export function installModal(deps: ModalDeps = {}): ModalHandle | undefined {
     if (live && live.el.isConnected !== false) {
       live.open();
       return live;
+    }
+    // A detached-but-live handle still holds listeners/timers — destroy it
+    // before replacing so a remount can't leak the old wiring.
+    if (live) {
+      try {
+        live.destroy();
+      } catch {}
+      live = undefined;
     }
     const handle = mountModal(deps);
     if (handle) live = handle;

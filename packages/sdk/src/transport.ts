@@ -120,6 +120,7 @@ export const injectScript = (
   doc: InjectableDocument | null | undefined,
   url: string | undefined,
   onload?: () => void,
+  onerror?: () => void,
 ): void => {
   const script = doc?.createElement?.('script');
   const parent = (doc?.head ?? doc?.body ?? doc?.documentElement) as
@@ -129,6 +130,7 @@ export const injectScript = (
   script.src = url;
   script.async = true;
   script.onload = onload ?? null;
+  script.onerror = onerror ?? null;
   parent.appendChild(script);
 };
 

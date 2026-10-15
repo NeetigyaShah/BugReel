@@ -102,8 +102,10 @@ export function createWorkerRuntime(options: WorkerRuntimeOptions = {}) {
               },
             ];
           }
-          // One clock for the whole report: the host stamps meta.capturedAt at
-          // open time; the event window and the findings cutoff share it.
+          // Window anchor: the host stamps meta.capturedAt at open time and
+          // the findings cutoff shares it. Events *after* the stamp can still
+          // land in the window (buffer.window lower-bounds only) — they just
+          // render at negative offsets, which is honest.
           const now = Number.isFinite(meta.capturedAt) ? meta.capturedAt : Date.now();
           const liveFindings = findings.filter((f) => f.timestamp >= now - windowMs);
           // The manifest inside report.json must name exactly what lands in

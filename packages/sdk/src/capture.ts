@@ -432,8 +432,18 @@ export function installCapture(deps: CaptureDeps): CaptureHandle {
   // (same script-src that loaded us) and reads `globalThis.BugReelModal`.
   // ------------------------------------------------------------------
   let modalLoaded = false;
+  let modalLoading = false;
   const trackModal = (modal: ModalHandle | undefined): boolean => {
     if (!modal) return false;
+    // The load resolved after destroy() — tear it down immediately instead
+    // of pushing into an already-spliced cleanups array (orphaned modal
+    // bound to a dead transport).
+    if (destroyed) {
+      try {
+        modal.destroy();
+      } catch {}
+      return true;
+    }
     cleanups.push(() => {
       try {
         modal.destroy();
@@ -451,17 +461,30 @@ export function installCapture(deps: CaptureDeps): CaptureHandle {
     }
   };
   const loadModal = guard((): void => {
-    if (modalLoaded) return;
-    modalLoaded = true;
+    if (modalLoaded || modalLoading) return;
     const modalDeps: ModalDeps = { window: win, send: deps.workerSend };
     // npm path — the entry injected an import('./modal') installer.
     if (deps.installModal) {
+      modalLoading = true;
       try {
-        void Promise.resolve(deps.installModal(modalDeps)).then(trackModal).catch(() => {});
-      } catch {}
+        void Promise.resolve(deps.installModal(modalDeps))
+          .then((modal) => {
+            modalLoading = false;
+            // A failed install must not latch — allow the next open to retry.
+            modalLoaded = trackModal(modal);
+          })
+          .catch(() => {
+            modalLoading = false;
+          });
+      } catch {
+        modalLoading = false;
+      }
       return;
     }
-    if (trackModal(installGlobal(modalDeps))) return;
+    if (trackModal(installGlobal(modalDeps))) {
+      modalLoaded = true;
+      return;
+    }
     // Resolve the sibling URL from our own <script> element — it sits in the
     // DOM with the exact origin/path the loader used, so no plumbing needed.
     let src: string | undefined;
@@ -478,9 +501,25 @@ export function installCapture(deps: CaptureDeps): CaptureHandle {
         }
       }
     } catch {}
-    injectScript(win?.document, src, () => trackModal(installGlobal(modalDeps)));
+    if (!src) return; // no latch — next open retries the whole resolution
+    modalLoading = true;
+    injectScript(
+      win?.document,
+      src,
+      () => {
+        modalLoading = false;
+        modalLoaded = trackModal(installGlobal(modalDeps));
+      },
+      () => {
+        modalLoading = false;
+      },
+    );
   });
   on(win?.document as unknown as EventTargetLike | undefined, 'bugreel:open', loadModal);
+  // Replay an open that fired before this chunk installed — the trigger is
+  // live from the loader but the modal only becomes mountable here. The flag
+  // lives on window because chunk bundles can't share module state.
+  if ((win as unknown as Record<string, unknown> | undefined)?.['__bugreelOpen']) loadModal();
 
   let destroyed = false;
   return {

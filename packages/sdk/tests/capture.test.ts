@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installCapture, type CaptureDeps } from '../src/capture';
+import type { ModalHandle } from '../src/modal';
 import type { ConsoleEvent, ErrorEvent, NetworkEvent } from '../src/types';
 import { collect, el, FakeWindow, fakeResponse, FakeXHR } from './fakes';
 
@@ -366,5 +367,31 @@ describe('modal bootstrap (chunk 3)', () => {
     } finally {
       delete (globalThis as { BugReelModal?: unknown }).BugReelModal;
     }
+  });
+
+  it('a failed install does not latch — the next open retries', async () => {
+    const installModal = vi.fn().mockReturnValueOnce(undefined).mockReturnValue({ el: {} as HTMLElement, open() {}, close() {}, destroy: vi.fn() });
+    makeCapture({ installModal });
+    win.document.fire('bugreel:open', {});
+    expect(installModal).toHaveBeenCalledTimes(1);
+    await Promise.resolve(); // the failed install settles and clears the latch
+    await Promise.resolve();
+    win.document.fire('bugreel:open', {});
+    expect(installModal).toHaveBeenCalledTimes(2);
+  });
+
+  it('a modal that installs after destroy() is torn down immediately', async () => {
+    const destroy = vi.fn();
+    let resolve: ((m: ModalHandle | undefined) => void) | undefined;
+    const installModal = vi.fn(
+      () => new Promise<ModalHandle | undefined>((r) => (resolve = r)),
+    );
+    const { capture } = makeCapture({ installModal });
+    win.document.fire('bugreel:open', {});
+    capture.destroy();
+    resolve?.({ el: {} as HTMLElement, open() {}, close() {}, destroy });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(destroy).toHaveBeenCalledTimes(1);
   });
 });

@@ -52,10 +52,6 @@ test('auto-init: pill mounts, capture chunk loads, click→fetch→open→report
     .poll(() => page.evaluate(() => !!window.__report), { timeout: 15_000 })
     .toBe(true);
 
-  if (!(await page.evaluate(() => !!window.__report))) {
-    console.log('DBG', await page.evaluate(() => (window as unknown as {__dbg: string[]}).__dbg));
-    console.log('ERRS', pageErrors);
-  }
   const report = await page.evaluate(
     () => window.__report as { events?: { type: string }[] },
   );

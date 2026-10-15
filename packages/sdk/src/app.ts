@@ -56,6 +56,10 @@ export interface BugReelEnv {
   scheduleIdle?(cb: () => void): void;
 }
 
+// `window.__bugreelOpen` — cross-chunk open flag set by open() below (a
+// window global, not a module binding: the lazy capture bundle would get
+// its own copy of module state). The capture chunk replays it on install
+// so a first press inside the lazy-load window isn't lost.
 export const noopHandle: BugReelHandle = {
   open() {},
   destroy() {},
@@ -119,6 +123,10 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
   const sessionId = uuid();
 
   const open = (): void => {
+    // Flag the open for the capture chunk's replay-on-install (a window
+    // global — module state wouldn't survive the chunk boundary). A window
+    // property write can't throw into the host.
+    (win as unknown as Record<string, unknown>).__bugreelOpen = true;
     try {
       transport.send({
         type: 'bugreel:compile',
@@ -153,9 +161,10 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
     // replies (bugreel:bugpack, bugreel:error) forward whole so listeners can
     // match requestIds.
     onMessage: (message) => {
-      if (message?.type) {
-        dispatch(message.type, message.type === 'bugreel:report' ? message.report : message);
-      }
+      // Replies forward whole as DOM events — bugreel:report carries the
+      // compiled report, bugreel:bugpack the packed bytes, bugreel:error the
+      // requestId-correlated failure. Consumers read detail.report/.bugpack.
+      if (message?.type) dispatch(message.type, message);
     },
   });
 

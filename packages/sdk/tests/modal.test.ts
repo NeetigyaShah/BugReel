@@ -123,7 +123,7 @@ describe('mountModal', () => {
   it('renders the four-part preview when a bugreel:report event lands', () => {
     const { deps } = setup();
     const h = mount(deps);
-    deliver('bugreel:report', report());
+    deliver('bugreel:report', { requestId: 't', report: report() });
     const preview = text(h, 'preview');
     expect(preview).toContain('What the reporter said');
     expect(preview).toContain('What Happened');
@@ -132,6 +132,32 @@ describe('mountModal', () => {
     expect(preview).toContain("Clicked 'Pay'");
     expect(preview).toContain('Developer toolkit');
     expect(preview).toContain('(not answered)');
+  });
+
+  it('hostile report fields stay inert — preview never turns them into elements', () => {
+    const { deps } = setup();
+    const h = mount(deps);
+    const hostile = report();
+    hostile.storySteps = [
+      { at: 1, kind: 'click', text: '"><img src=x><script>alert(1)</script>' },
+    ];
+    hostile.findings = [
+      {
+        detectorId: 'dead-click',
+        severity: 'warning',
+        timestamp: 1,
+        headline: '<img src=y onerror=alert(1)>',
+        explanation: '</details><img src=z>',
+        relatedEventIds: [],
+      },
+    ];
+    fillBoth(h, { tryingToDo: '"><b>x</b>', wentWrong: '</textarea><img src=w>' });
+    deliver('bugreel:report', { requestId: 't', report: hostile });
+    const root = h.el.shadowRoot!;
+    expect(root.querySelector('img')).toBeNull();
+    expect(root.querySelector('script')).toBeNull();
+    expect(root.querySelector('b')).toBeNull();
+    expect(text(h, 'preview')).toContain('<img src=x>'); // as text, not markup
   });
 
   it('renders immediately when a report is provided in deps', () => {
@@ -317,7 +343,7 @@ describe('mountModal', () => {
     h.destroy();
     expect(document.body.contains(h.el)).toBe(false);
     const before = text(h, 'preview');
-    deliver('bugreel:report', report());
+    deliver('bugreel:report', { requestId: 't', report: report() });
     deliver('bugreel:open', undefined);
     expect(text(h, 'preview')).toBe(before); // listeners are gone — no re-render
     expect(sent.filter((m) => m.type === 'bugreel:compile')).toHaveLength(1);

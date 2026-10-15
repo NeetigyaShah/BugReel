@@ -54,6 +54,10 @@ const openDatabase = (idb: IDBFactory): Promise<IDBDatabase> =>
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
+    // A blocked open (another connection holding an older version) would
+    // otherwise leave saveReport's await unsettled — wedging the modal's
+    // submit state forever. Resolve undefined-ish via error path.
+    req.onblocked = () => reject(new Error('bugreel db open blocked'));
   });
 
 const metaOf = (record: StoredReport): StoredReportMeta => ({
@@ -72,7 +76,15 @@ export function createReportStore(
 ): ReportStore | undefined {
   if (typeof indexedDB?.open !== 'function') return undefined;
   let db: Promise<IDBDatabase> | undefined;
-  const open = (): Promise<IDBDatabase> => (db ??= openDatabase(indexedDB));
+  const open = (): Promise<IDBDatabase> => {
+    // Never memoize a rejected open — one transient failure must not disable
+    // persistence for the whole session.
+    db ??= openDatabase(indexedDB).catch((err) => {
+      db = undefined;
+      throw err;
+    });
+    return db;
+  };
 
   return {
     async saveReport(report) {

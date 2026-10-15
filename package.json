@@ -19,6 +19,7 @@
     "@bugreel/sdk": "workspace:*",
     "@playwright/test": "^1.49.1",
     "@types/node": "^22.10.2",
+    "happy-dom": "^21.0.1",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

@@ -5,6 +5,9 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "devDependencies": {
+    "@bugreel/sdk": "workspace:*"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit"
   }

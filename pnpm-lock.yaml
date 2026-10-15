@@ -33,7 +33,11 @@ importers:
 
   packages/sdk: {}
 
-  packages/server: {}
+  packages/server:
+    devDependencies:
+      '@bugreel/sdk':
+        specifier: workspace:*
+        version: link:../sdk
 
 packages:
 

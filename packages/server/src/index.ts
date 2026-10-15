@@ -1,5 +1,3 @@
-// Payload contract for the Phase-2 backend. The authoritative .bugpack v1.0
-// schema is owned by the SDK event-model work; keep this scaffold types-only.
-export interface BugpackReport {
-  schemaVersion: '1.0';
-}
+// The Phase-2 backend consumes the .bugpack v1.0 payload contract owned by
+// the SDK — a pure type dependency, zero implementation (ADR-0001).
+export type { BugReelReport as BugpackReport } from '@bugreel/sdk';

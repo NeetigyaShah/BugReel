@@ -6,4 +6,6 @@ dist/
 !.env.example
 .DS_Store
 .scratch/
-blackbox.db
+*.db
+test-results/
+playwright-report/

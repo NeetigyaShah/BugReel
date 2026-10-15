@@ -1,0 +1,20 @@
+{
+  "name": "@bugreel/player",
+  "version": "0.1.0",
+  "description": "BugReel .bugpack timeline player — <bugreel-player> custom element",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "player.html"],
+  "scripts": {
+    "build": "tsup --config tsup.config.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}

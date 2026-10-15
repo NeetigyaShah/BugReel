@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BugReel Player</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #0f1115;
+        color: #e8e8ea;
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+      }
+      #drop {
+        border: 2px dashed #444;
+        border-radius: 12px;
+        padding: 48px 64px;
+        color: #aaa;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="drop">Drop a .bugpack file anywhere to open it</div>
+    <script src="./dist/player.global.js"></script>
+    <bugreel-player></bugreel-player>
+  </body>
+</html>

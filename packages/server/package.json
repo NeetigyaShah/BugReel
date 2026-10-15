@@ -1,0 +1,11 @@
+{
+  "name": "@bugreel/server",
+  "version": "0.1.0",
+  "description": "BugReel Phase-2 backend — types-only scaffold around the .bugpack payload (implementation out of scope for v1)",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

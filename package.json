@@ -1,0 +1,26 @@
+{
+  "name": "bugreel-monorepo",
+  "private": true,
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "test": "pnpm -r --if-present build && vitest run && playwright test",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "setup:e2e": "playwright install chromium",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "size-check": "node scripts/size-check.mjs",
+    "demo": "pnpm -C demo serve"
+  },
+  "devDependencies": {
+    "@bugreel/sdk": "workspace:*",
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.2",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

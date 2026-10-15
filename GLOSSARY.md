@@ -76,7 +76,7 @@ The interactive scrubber over a Report's Event Window: each node is a typed even
 _Avoid_: replay, session replay, time-travel player
 
 **Trigger**:
-How a Reporter opens the report modal: the keyboard shortcut (Ctrl/Cmd+B), a mobile shake gesture, or the floating pill.
+How a Reporter opens the report modal: the keyboard shortcut (Ctrl/Cmd+Shift+B), a mobile shake gesture, or the floating pill.
 _Avoid_: hotkey, launcher
 
 **Privacy Firewall**:

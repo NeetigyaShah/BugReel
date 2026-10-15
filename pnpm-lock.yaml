@@ -33,7 +33,7 @@ importers:
   demo: {}
 
   packages/player:
-    devDependencies:
+    dependencies:
       '@bugreel/sdk':
         specifier: workspace:*
         version: link:../sdk

@@ -277,4 +277,50 @@ describe('BugReelPlayer', () => {
     await el.loadFromUrl('https://gone.test/x.bugpack');
     expect(shadow(el).querySelector('.br-error')?.textContent).toContain('network gone');
   });
+
+  it('media survives a second loadBytes — revoked URLs are never re-handed', () => {
+    const el = makePlayer();
+    el.bugpack = bugpack();
+    const firstSrc = shadow(el).querySelector<HTMLImageElement>('.br-stage img')?.src;
+    // Second pack: same media NAME, different bytes — the cache must not serve
+    // the revoked URL from the first load.
+    el.bugpack = packBugpack(report, { 'snapshot-annotated.png': new Uint8Array([7, 7, 7]) });
+    const img = shadow(el).querySelector<HTMLImageElement>('.br-stage img');
+    expect(img?.src).toBeTruthy();
+    expect(img?.src).not.toBe(firstSrc);
+  });
+
+  it('hostile story-step kinds can not inject markup (class-attribute XSS)', () => {
+    const hostile = compileReport({
+      events,
+      findings: [],
+      meta: report.meta,
+    });
+    hostile.storySteps = [
+      {
+        at: t0 + 1_000,
+        kind: '"><img src=x>' as never,
+        text: 'injected step',
+        severity: '"><img src=y>' as never,
+      },
+    ];
+    const el = makePlayer();
+    el.bugpack = packBugpack(hostile);
+    const root = shadow(el);
+    expect(root.querySelector('img[src="x"]')).toBeNull();
+    expect(root.querySelector('img[src="y"]')).toBeNull();
+    // Neutral kind class applied instead of the hostile token
+    expect(root.querySelector('.br-step.k-console')).toBeTruthy();
+  });
+
+  it('malformed report sections in a click handler never throw to the host', () => {
+    const el = makePlayer();
+    el.bugpack = bugpack();
+    const reportRef = el.report as unknown as Record<string, unknown>;
+    reportRef.network = {}; // not an array — a foreign report shape
+    reportRef.findings = [{ timestamp: t0 + 5_000, severity: 'warning', relatedEventIds: 7 }];
+    const node = shadow(el).querySelector<HTMLElement>('.br-node.k-click');
+    expect(() => node?.click()).not.toThrow();
+    expect(shadow(el).querySelector('.br-inspector')?.textContent).toBeTruthy();
+  });
 });

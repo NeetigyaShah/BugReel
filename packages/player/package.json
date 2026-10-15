@@ -13,7 +13,7 @@
     }
   },
   "files": ["dist", "player.html"],
-  "devDependencies": {
+  "dependencies": {
     "@bugreel/sdk": "workspace:*"
   },
   "scripts": {

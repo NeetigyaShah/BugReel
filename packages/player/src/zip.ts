@@ -18,7 +18,9 @@ export interface ZipEntryData {
 }
 
 /** Every malformed-archive condition funnels into this one catchable type. */
-export class ZipReadError extends Error {}
+export class ZipReadError extends Error {
+  override name = 'ZipReadError';
+}
 
 const EOCD_SIG = 0x06054b50;
 const CDIR_SIG = 0x02014b50;
@@ -49,10 +51,16 @@ export function readStoreZip(input: Uint8Array | ArrayBuffer): ZipEntryData[] {
     }
   }
   if (eocd < 0) fail('not a ZIP archive (no end-of-central-directory record)');
+  // The comment length must consume exactly the remaining bytes — otherwise
+  // the signature found by the backward scan was inside a comment or junk.
+  if (eocd + 22 + view.getUint16(eocd + 20, true) !== bytes.byteLength) {
+    fail('not a ZIP archive (trailing bytes after end-of-central-directory)');
+  }
 
   const count = view.getUint16(eocd + 10, true);
   let at = view.getUint32(eocd + 16, true);
   const out: ZipEntryData[] = [];
+  let total = 0; // STORE can't inflate: extracted bytes can never exceed file size
 
   for (let i = 0; i < count; i++) {
     if (at + 46 > bytes.byteLength || view.getUint32(at, true) !== CDIR_SIG) {
@@ -76,6 +84,8 @@ export function readStoreZip(input: Uint8Array | ArrayBuffer): ZipEntryData[] {
     const start =
       local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
     if (start + size > bytes.byteLength) fail(`truncated entry '${name}'`);
+    total += size;
+    if (total > bytes.byteLength) fail(`archive extracts beyond its own size`);
     out.push({ name, data: bytes.slice(start, start + size) });
   }
   return out;

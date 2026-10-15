@@ -71,4 +71,31 @@ describe('readStoreZip', () => {
     zip[cdir + 10] = 8;
     expect(() => readStoreZip(zip)).toThrow(/compression method 8/);
   });
+
+  it('rejects overlapping entries that claim more bytes than the archive holds', () => {
+    // STORE can't inflate: summed sizes exceeding the file = crafted archive.
+    // Payload > header overhead so that claiming the range twice overflows.
+    const zip = buildZip([{ name: 'a.bin', data: enc.encode('x'.repeat(200)) }]);
+    // Duplicate the central-directory record so one data range is claimed twice.
+    let cdir = -1;
+    for (let i = 0; i < zip.length - 4; i++) {
+      if (zip[i] === 0x50 && zip[i + 1] === 0x4b && zip[i + 2] === 0x01 && zip[i + 3] === 0x02) {
+        cdir = i;
+        break;
+      }
+    }
+    const record = zip.slice(cdir, cdir + 46 + 'a.bin'.length);
+    const eocd = cdir + record.length;
+    const bigger = new Uint8Array(zip.length + record.length);
+    bigger.set(zip.slice(0, eocd), 0);
+    bigger.set(record, eocd);
+    bigger.set(zip.slice(eocd), eocd + record.length);
+    // Fix EOCD: count 1→2, central size += record.length
+    const tail = bigger.length - 22;
+    bigger[tail + 8] = 2;
+    bigger[tail + 10] = 2;
+    const size = new DataView(bigger.buffer).getUint32(tail + 12, true) + record.length;
+    new DataView(bigger.buffer).setUint32(tail + 12, size, true);
+    expect(() => readStoreZip(bigger)).toThrow(/beyond its own size|corrupt/);
+  });
 });

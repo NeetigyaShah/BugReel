@@ -66,6 +66,24 @@ const KIND_OF: Record<RawBugReelEvent['type'], NodeKind> = {
   error: 'error',
 };
 
+// Report fields are page-controlled data — a hostile .bugpack could carry a
+// crafted kind/severity into a class attribute. Whitelist both before they
+// touch innerHTML; anything unknown renders as a neutral kind.
+const KNOWN_KINDS = new Set<NodeKind>([
+  'click',
+  'input',
+  'route',
+  'network',
+  'console',
+  'error',
+  'finding',
+]);
+const KNOWN_SEVERITIES = new Set(['info', 'warning', 'critical']);
+const clsKind = (kind: unknown): NodeKind =>
+  KNOWN_KINDS.has(kind as NodeKind) ? (kind as NodeKind) : 'console';
+const clsSev = (severity: unknown): string =>
+  typeof severity === 'string' && KNOWN_SEVERITIES.has(severity) ? ` sev-${severity}` : '';
+
 const KIND_LABEL: Record<NodeKind, string> = {
   click: 'Click',
   input: 'Input',
@@ -102,6 +120,8 @@ const describeEvent = (event: RawBugReelEvent): string => {
       return `console.${event.level}: ${event.message}`;
     case 'error':
       return `Error: ${event.message}`;
+    default:
+      return 'Event';
   }
 };
 
@@ -251,6 +271,8 @@ export class BugReelPlayer extends HTMLElement {
   #report: BugReelReport | null = null;
   #media = new Map<string, Uint8Array>();
   #objectUrls: string[] = [];
+  /** media name → object URL: one per entry, no accumulation on tab switches */
+  #urlCache = new Map<string, string>();
   #nodes: TimelineNode[] = [];
   #steps: StoryStep[] = [];
   #start = 0;
@@ -298,9 +320,15 @@ export class BugReelPlayer extends HTMLElement {
     else this.setAttribute('src', url);
   }
 
-  /** Assign raw .bugpack bytes — ArrayBuffer or Uint8Array. */
+  /** Assign raw .bugpack bytes — ArrayBuffer or Uint8Array; null resets. */
   set bugpack(bytes: ArrayBuffer | Uint8Array | null | undefined) {
-    if (bytes == null) return;
+    if (bytes == null) {
+      this.#report = null;
+      this.#media.clear();
+      this.#revokeUrls();
+      this.#renderEmpty();
+      return;
+    }
     this.loadBytes(bytes);
   }
 
@@ -371,6 +399,7 @@ export class BugReelPlayer extends HTMLElement {
 
   #onDrop = (e: Event): void => {
     e.preventDefault();
+    e.stopPropagation(); // a page-level drop handler (player.html) must not double-load
     const file = (e as DragEvent).dataTransfer?.files?.[0];
     if (file) void this.loadBlob(file);
   };
@@ -384,6 +413,7 @@ export class BugReelPlayer extends HTMLElement {
       }
     }
     this.#objectUrls = [];
+    this.#urlCache.clear(); // revoked URLs must never be handed out again
   }
 
   /** Window = trailing ~60s frame ending at capture time (or the last event). */
@@ -394,7 +424,10 @@ export class BugReelPlayer extends HTMLElement {
       ...report.events.map((e) => e.at),
       ...(report.findings ?? []).map((f) => f.timestamp),
     ].filter(Number.isFinite);
-    this.#end = Math.max(report.meta.capturedAt || 0, ...ats) || Date.now();
+    // A fully-degenerate report (no finite timestamps at all) still needs a
+    // stable window — never fall back to wall-clock, or the same file renders
+    // differently each load.
+    this.#end = Math.max(report.meta.capturedAt || 0, ...ats) || 60_000;
     this.#start = Math.min(...ats, this.#end - 60_000);
     if (this.#end - this.#start < 1) this.#end = this.#start + 1;
 
@@ -404,12 +437,23 @@ export class BugReelPlayer extends HTMLElement {
     }
     this.#steps = (report.storySteps?.length
       ? [...report.storySteps]
-      : report.events.map((e) => ({
-          at: e.at,
-          eventId: e.id,
-          kind: KIND_OF[e.type],
-          text: describeEvent(e),
-        }))
+      : // Foreign reports without storySteps still list findings on the
+        // timeline — the scrubber already plots them as diamonds.
+        [
+          ...report.events.map((e) => ({
+            at: e.at,
+            eventId: e.id,
+            kind: KIND_OF[e.type],
+            text: describeEvent(e),
+          })),
+          ...(report.findings ?? []).map((f) => ({
+            at: f.timestamp,
+            eventId: f.relatedEventIds?.[0],
+            kind: 'finding' as const,
+            text: f.headline,
+            severity: f.severity,
+          })),
+        ]
     ).sort((a, b) => a.at - b.at);
 
     this.#nodes = [
@@ -493,7 +537,7 @@ export class BugReelPlayer extends HTMLElement {
             this.#steps
               .map(
                 (s, i) =>
-                  `<li class="br-step k-${s.kind}${s.severity ? ` sev-${s.severity}` : ''}"
+                  `<li class="br-step k-${clsKind(s.kind)}${clsSev(s.severity)}"
                     data-i="${i}" title="${esc(new Date(s.at).toLocaleTimeString())}">
                     <span class="br-t">${esc(relTime(s.at, this.#start))}</span>
                     <span class="br-step-text">${esc(s.text)}</span></li>`,
@@ -511,8 +555,8 @@ export class BugReelPlayer extends HTMLElement {
           <div class="br-track">${this.#nodes
             .map(
               (n, i) =>
-                `<button class="br-node k-${n.kind}${
-                  n.finding ? ` sev-${n.finding.severity}` : ''
+                `<button class="br-node k-${clsKind(n.kind)}${
+                  n.finding ? clsSev(n.finding.severity) : ''
                 }" data-i="${i}" style="left:${clampPct(
                   ((n.at - this.#start) / (this.#end - this.#start)) * 100,
                 )}%" title="${esc(`${relTime(n.at, this.#start)} · ${KIND_LABEL[n.kind]} — ${n.label}`)}"></button>`,
@@ -578,9 +622,12 @@ export class BugReelPlayer extends HTMLElement {
   /** bytes → displayable URL: object URL preferred, data-URL fallback. */
   #mediaUrl(name: string, bytes: Uint8Array): string | null {
     const mime = mimeOf(name);
+    const cached = this.#urlCache.get(name);
+    if (cached) return cached;
     try {
       const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: mime }));
       this.#objectUrls.push(url);
+      this.#urlCache.set(name, url);
       return url;
     } catch {
       /* fall through to data URL */
@@ -701,6 +748,12 @@ export class BugReelPlayer extends HTMLElement {
   #placeBeacon(node: TimelineNode): void {
     const beacon = this.shadowRoot?.querySelector<HTMLElement>('.br-beacon');
     if (!beacon) return;
+    // The beacon is only meaningful over the snapshot image — a video or
+    // file card has no coordinate space for it.
+    if (!this.shadowRoot?.querySelector('.br-shot')) {
+      beacon.hidden = true;
+      return;
+    }
     const event = node.event;
     const viewport = this.#report?.meta?.viewport;
     let x: number | undefined;
@@ -719,8 +772,14 @@ export class BugReelPlayer extends HTMLElement {
       beacon.hidden = true;
       return;
     }
-    beacon.style.left = `${clampPct((x / viewport.width) * 100)}%`;
-    beacon.style.top = `${clampPct((y / viewport.height) * 100)}%`;
+    const left = (x / viewport.width) * 100;
+    const top = (y / viewport.height) * 100;
+    if (!Number.isFinite(left) || !Number.isFinite(top)) {
+      beacon.hidden = true;
+      return;
+    }
+    beacon.style.left = `${clampPct(left)}%`;
+    beacon.style.top = `${clampPct(top)}%`;
     beacon.hidden = false;
   }
 
@@ -755,10 +814,18 @@ export class BugReelPlayer extends HTMLElement {
     const report = this.#report;
     if (!report) return '';
     const near = <T extends { at: number; id?: string }>(list: T[] | undefined): T[] =>
-      (list ?? []).filter((e) => e.id !== ignoreId && Math.abs(e.at - at) <= 2000);
+      (Array.isArray(list) ? list : []).filter(
+        (e) => e.id !== ignoreId && Math.abs(e.at - at) <= 2000,
+      );
+    // Mirrors the worker's isFailedRequest() — keep predicates in lockstep:
+    // CORS/transport blocks, status 0, missing status, or any 4xx/5xx.
     const net = near(report.network).filter(
       (e: NetworkEvent) =>
-        e.corsBlocked === true || e.ok === false || e.status === undefined || e.status >= 400,
+        e.corsBlocked === true ||
+        e.ok === false ||
+        e.status === undefined ||
+        e.status === 0 ||
+        e.status >= 400,
     );
     const con = near(report.console).filter((e) => e.level === 'error' || e.level === 'warn');
     let html = '';
@@ -791,11 +858,15 @@ export class BugReelPlayer extends HTMLElement {
     const event = node.event;
     const finding =
       node.finding ??
-      (event ? (report.findings ?? []).find((f) => f.relatedEventIds?.includes(event.id)) : undefined);
+      (event
+        ? (Array.isArray(report.findings) ? report.findings : []).find(
+            (f) => Array.isArray(f.relatedEventIds) && f.relatedEventIds.includes(event.id),
+          )
+        : undefined);
     const moment = step?.text ?? node.label;
     insp.innerHTML = `
       <div class="br-insp-head">
-        <span class="br-badge k-${node.kind}">${esc(KIND_LABEL[node.kind] ?? node.kind)}</span>
+        <span class="br-badge k-${clsKind(node.kind)}">${esc(KIND_LABEL[clsKind(node.kind)])}</span>
         <span class="br-insp-time">${esc(relTime(node.at, this.#start))} · ${esc(
           new Date(node.at).toLocaleTimeString(),
         )}</span>
@@ -803,13 +874,13 @@ export class BugReelPlayer extends HTMLElement {
       <p class="br-insp-moment">${esc(moment)}</p>
       ${
         finding
-          ? `<div class="br-insp-finding sev-${esc(finding.severity)}"><strong>${esc(
+          ? `<div class="br-insp-finding${clsSev(finding.severity)}"><strong>${esc(
               finding.headline,
             )}</strong><p>${esc(finding.explanation)}</p></div>`
           : ''
       }
       ${this.#targetRows(event && 'target' in event ? event.target : undefined)}
-      ${this.#contextHtml(node.at, event?.id) || '<p class="quiet">Network and console quiet around this moment.</p>'}`;
+      ${this.#contextHtml(node.at, event?.id) || '<p class="quiet">No network failures or console errors within ±2s.</p>'}`;
   }
 
   // --- copy buttons -----------------------------------------------------------

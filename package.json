@@ -9,7 +9,7 @@
     "build": "pnpm -r --if-present build",
     "test": "pnpm -r --if-present build && vitest run && playwright test",
     "test:unit": "vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "pnpm -r --if-present build && playwright test",
     "setup:e2e": "playwright install chromium",
     "typecheck": "pnpm -r --if-present typecheck",
     "size-check": "node scripts/size-check.mjs",

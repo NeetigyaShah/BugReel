@@ -15,7 +15,12 @@ export function describeTarget(el: Element): EventTargetRef | undefined {
   return { selector: el.tagName.toLowerCase() };
 }
 
-export function scrubInputValue(el: Element, value: string): string | undefined {
+export function scrubInputValue(
+  el: Element,
+  value: string,
+  opts?: { strict?: boolean },
+): string | undefined {
   void el;
+  void opts;
   return value;
 }

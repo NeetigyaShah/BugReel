@@ -64,6 +64,9 @@ export interface NetworkEvent extends EventBase {
   ok?: boolean;
   durationMs?: number;
   corsBlocked?: boolean;
+  /** Scrubbed header maps — auth/cookie headers stripped by the firewall */
+  requestHeaders?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
   /** Scrubbed + truncated bodies */
   requestBody?: string;
   responseBody?: string;

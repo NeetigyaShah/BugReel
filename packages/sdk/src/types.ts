@@ -172,6 +172,8 @@ export interface BugReelReport {
   network: NetworkEvent[];
   /** Console events distilled from `events` for the player inspector pane */
   console: ConsoleEvent[];
+  /** Filenames of media bundled into the .bugpack `media/` dir (snapshot, attachments, clip) */
+  media?: string[];
   outputs: CompiledOutputs;
 }
 

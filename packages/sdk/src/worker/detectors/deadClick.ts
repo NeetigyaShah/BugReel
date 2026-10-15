@@ -38,7 +38,7 @@ export const DeadClickDetector: BugDetector = {
       headline: `Clicked ${label} — nothing happened`,
       explanation:
         `${label} produced no network request, route change, console output, ` +
-        `or DOM mutation after the click — the element looks unwired.`,
+        `or DOM mutation after the click.`,
       selector: event.target.selector,
       relatedEventIds: [event.id],
     };

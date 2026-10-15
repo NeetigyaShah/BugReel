@@ -14,14 +14,18 @@ export const SilentApiErrorDetector: BugDetector = {
   id: 'silent-api-error',
   onEvent(event) {
     if (event.type !== 'fetch' && event.type !== 'xhr') return null;
-    const failed = (event.status !== undefined && event.status >= 400) || event.corsBlocked === true;
+    const failed = event.corsBlocked === true || event.status === 0 || (event.status ?? 0) >= 400;
     if (!failed || event.errorUiRendered !== false) return null;
 
-    const severity = event.status !== undefined && event.status >= 500 ? 'critical' : 'warning';
-    const statusText = event.status !== undefined ? String(event.status) : 'CORS blocked';
+    const severity = (event.status ?? 0) >= 500 ? 'critical' : 'warning';
+    const statusText = event.corsBlocked
+      ? 'CORS blocked'
+      : event.status !== undefined && event.status !== 0
+        ? String(event.status)
+        : 'no response';
     const durationText = event.durationMs !== undefined ? ` in ${event.durationMs}ms` : '';
     const detail =
-      event.status !== undefined
+      event.status !== undefined && event.status !== 0
         ? `returned a ${event.status} error${durationText}`
         : `never completed${durationText} (CORS or network block)`;
     return {

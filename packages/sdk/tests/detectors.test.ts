@@ -180,7 +180,9 @@ describe('RageClickDetector', () => {
       relatedEventIds: ['r1', 'r2', 'r3'],
     });
     expect(finding?.headline).toBe("User rage-clicked 'Pay Now' (3× in 1000ms)");
-    expect(finding?.explanation).toContain('unresponsive');
+    expect(finding?.explanation).toContain('3 rapid clicks');
+    // observed facts only — no inferred cause in What Happened copy
+    expect(finding?.explanation).not.toMatch(/unresponsive|likely|probably|silently/);
   });
 
   it('counts the whole burst in the headline and relatedEventIds', () => {

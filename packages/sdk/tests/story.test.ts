@@ -111,6 +111,28 @@ describe('eventToStep — network', () => {
     expect(eventToStep(net({ corsBlocked: true }))?.text).toBe(
       'POST /api/pay failed — connection blocked (CORS or a network error)',
     );
+    // fetch rejected before a response (e.g. abort) and XHR loadend with status 0
+    expect(eventToStep(net({}))?.text).toBe('POST /api/pay failed — no response (network failure)');
+    expect(eventToStep(net({ status: 0, ok: false }))?.text).toBe(
+      'POST /api/pay failed — no response (network failure)',
+    );
+  });
+
+  it('a corsBlocked verdict outranks any status', () => {
+    expect(eventToStep(net({ status: 200, corsBlocked: true }))?.text).toBe(
+      'POST /api/pay failed — connection blocked (CORS or a network error)',
+    );
+  });
+
+  it('folds captured newlines so one event cannot inject a second line', () => {
+    const pasted: InputEvent = {
+      id: 'i',
+      at: 0,
+      type: 'input',
+      target: { selector: 'textarea#bio', label: 'Bio', tagName: 'textarea' },
+      value: 'line one\r\nline two',
+    };
+    expect(eventToStep(pasted)?.text).toBe("Typed 'line one line two' into 'Bio'");
   });
 
   it('renders successes compactly with duration', () => {
@@ -147,10 +169,29 @@ describe('eventToStep — console and errors', () => {
     );
   });
 
+  it('parses Firefox and legacy-V8 missing-data phrasing', () => {
+    const reading = (message: string): ErrorEvent => ({
+      id: 'e',
+      at: 0,
+      type: 'error',
+      source: 'window.onerror',
+      message,
+    });
+    expect(eventToStep(reading(`can't access property "cart", state is undefined`))?.text).toBe(
+      "Crash — missing data: 'cart' was read before it existed",
+    );
+    expect(eventToStep(reading(`can't access property "items" of null`))?.text).toBe(
+      "Crash — missing data: 'items' was missing (null)",
+    );
+    expect(eventToStep(reading("Cannot read property 'total' of undefined"))?.text).toBe(
+      "Crash — missing data: 'total' was read before it existed",
+    );
+  });
+
   it('parses missing-function/undefined-name errors as unwired code', () => {
     const reading = (message: string): ErrorEvent => ({ id: 'e', at: 0, type: 'error', source: 'window.onerror', message });
     expect(eventToStep(reading("TypeError: handleSubmit is not a function"))?.text).toBe(
-      "Crash — missing wiring: 'handleSubmit' is not a function (the action was never defined)",
+      "Crash — missing wiring: 'handleSubmit' is not a function",
     );
     expect(eventToStep(reading("ReferenceError: processPayment is not defined"))?.text).toBe(
       "Crash — missing wiring: 'processPayment' is not defined",

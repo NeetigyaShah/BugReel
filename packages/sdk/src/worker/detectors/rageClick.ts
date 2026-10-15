@@ -40,8 +40,7 @@ export const RageClickDetector: BugDetector = {
       timestamp: event.at,
       headline: `User rage-clicked ${label} (${burst.length}× in ${RAGE_CLICK_WINDOW_MS}ms)`,
       explanation:
-        `${burst.length} rapid clicks landed on ${label} inside ${RAGE_CLICK_WINDOW_MS}ms — ` +
-        `the element is likely unresponsive or its action is silently failing.`,
+        `${burst.length} rapid clicks landed on ${label} inside ${RAGE_CLICK_WINDOW_MS}ms.`,
       selector,
       relatedEventIds: burst.map((e) => e.id),
     };

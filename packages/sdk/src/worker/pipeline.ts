@@ -16,6 +16,8 @@ export interface CompileInput {
   findings: DiagnosticFinding[];
   meta: ReportMeta;
   answers?: ReporterAnswers;
+  /** Filenames bundled into the .bugpack media dir — rendered in report.md section 1 */
+  media?: string[];
 }
 
 const isNetworkEvent = (e: RawBugReelEvent): e is NetworkEvent =>
@@ -27,7 +29,7 @@ const isConsoleEvent = (e: RawBugReelEvent): e is ConsoleEvent => e.type === 'co
  * events into Story steps and fills every compiled output; report.md is
  * rendered last because its toolkit embeds the other compilers' output.
  */
-export function compileReport({ events, findings, meta, answers }: CompileInput): BugReelReport {
+export function compileReport({ events, findings, meta, answers, media }: CompileInput): BugReelReport {
   if (!meta) throw new Error('compileReport requires report meta');
   const network = events.filter(isNetworkEvent);
   const report: BugReelReport = {
@@ -38,6 +40,7 @@ export function compileReport({ events, findings, meta, answers }: CompileInput)
     storySteps: buildStory(events, findings),
     events: [...events],
     network,
+    media: media?.length ? [...media] : undefined,
     console: events.filter(isConsoleEvent),
     outputs: {
       markdown: '',

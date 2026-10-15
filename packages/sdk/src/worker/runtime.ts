@@ -84,7 +84,11 @@ export function createWorkerRuntime(options: WorkerRuntimeOptions = {}) {
           return [];
         }
         case 'bugreel:compile': {
-          const now = Date.now();
+          // One clock for the whole report: the host stamps meta.capturedAt at
+          // open time; the event window and the findings cutoff share it.
+          const now = Number.isFinite(message.meta?.capturedAt)
+            ? message.meta.capturedAt
+            : Date.now();
           const liveFindings = findings.filter((f) => f.timestamp >= now - windowMs);
           return [
             {

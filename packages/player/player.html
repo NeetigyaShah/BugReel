@@ -5,26 +5,117 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>BugReel Player</title>
     <style>
+      html,
+      body {
+        height: 100%;
+      }
       body {
         margin: 0;
         font-family: system-ui, sans-serif;
         background: #0f1115;
         color: #e8e8ea;
-        display: grid;
-        min-height: 100vh;
-        place-items: center;
+      }
+      bugreel-player {
+        position: fixed;
+        inset: 0;
       }
       #drop {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: rgba(15, 17, 21, 0.97);
+        z-index: 10;
+      }
+      /* Once a report is open the zone collapses to a corner chip — the page
+         still accepts drops anywhere via the window-level listeners below. */
+      #drop.mini {
+        inset: auto;
+        right: 16px;
+        bottom: 16px;
+        display: block;
+        background: none;
+      }
+      #drop .inner {
         border: 2px dashed #444;
         border-radius: 12px;
         padding: 48px 64px;
         color: #aaa;
+        text-align: center;
+      }
+      #drop.mini .inner {
+        padding: 10px 16px;
+        font-size: 13px;
+        background: #161a22;
+        border-color: #33405a;
+        cursor: pointer;
+      }
+      #drop.over .inner {
+        border-color: #4da3ff;
+        color: #fff;
+      }
+      .browse {
+        color: #6ea8ff;
+        cursor: pointer;
+        text-decoration: underline;
+      }
+      #file {
+        display: none;
       }
     </style>
   </head>
   <body>
-    <div id="drop">Drop a .bugpack file anywhere to open it</div>
+    <bugreel-player id="p"></bugreel-player>
+    <div id="drop">
+      <div class="inner">
+        <p><strong>Drop a .bugpack file</strong> anywhere to open it</p>
+        <p class="when-big">or <label class="browse" for="file">choose a file…</label></p>
+        <p class="when-mini" hidden>Drop another .bugpack, or click to browse</p>
+        <input id="file" type="file" accept=".bugpack,.zip,application/zip" />
+      </div>
+    </div>
     <script src="./dist/player.global.js"></script>
-    <bugreel-player></bugreel-player>
+    <script>
+      const player = document.getElementById('p');
+      const dropEl = document.getElementById('drop');
+      const input = document.getElementById('file');
+
+      const openFile = (file) => {
+        if (file) void player.loadBlob(file);
+      };
+
+      // Collapse the overlay once a report renders; bring it back on failure.
+      player.addEventListener('bugreel:loaded', () => {
+        dropEl.classList.add('mini');
+        dropEl.querySelector('.when-big').hidden = true;
+        dropEl.querySelector('.when-mini').hidden = false;
+      });
+      player.addEventListener('bugreel:player-error', () => dropEl.classList.remove('mini'));
+
+      // Full-page drag/drop — works over file:// since no fetch is involved.
+      window.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropEl.classList.add('over');
+      });
+      window.addEventListener('dragleave', (e) => {
+        if (!e.relatedTarget) dropEl.classList.remove('over');
+      });
+      window.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropEl.classList.remove('over');
+        openFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+      });
+      input.addEventListener('change', () => openFile(input.files && input.files[0]));
+
+      // In mini mode the whole chip is the browse button (the big-mode label
+      // is hidden); in big mode only the label triggers the picker.
+      dropEl.querySelector('.inner').addEventListener('click', () => {
+        if (dropEl.classList.contains('mini')) input.click();
+      });
+
+      // Hosted use: player.html?src=/path/to/report.bugpack fetches via `src`.
+      const srcParam = new URLSearchParams(location.search).get('src');
+      if (srcParam) player.src = srcParam;
+    </script>
   </body>
 </html>

@@ -3,11 +3,385 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>BugReel Demo</title>
+    <title>Pulseboard — SaaS Dashboard</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%236366f1'/%3E%3Cpath d='M3 9h3l2-5 2 7 2-4h1' stroke='%23fff' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <!--
+      BugReel script-tag install (Mode 1 — offline). The loader boots the
+      capture chunk + worker from sibling dist files on this same server.
+      Mode 2 (direct webhook to Slack/Discord): uncomment once dispatch lands —
+      <script ... data-bugreel-webhook="https://hooks.slack.com/services/...">
+    -->
+    <script
+      src="/packages/sdk/dist/loader.global.js"
+      data-bugreel-pill="true"
+      data-bugreel-app="pulseboard"
+    ></script>
+    <style>
+      * { box-sizing: border-box; margin: 0; }
+      body {
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #f4f5f7;
+        color: #1f2430;
+        display: flex;
+        min-height: 100vh;
+      }
+      /* ---------- sidebar ---------- */
+      .sidebar {
+        width: 220px;
+        flex-shrink: 0;
+        background: #111527;
+        color: #c7cbe0;
+        padding: 20px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .logo {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: #fff;
+        font-weight: 700;
+        font-size: 16px;
+        padding: 4px 8px 18px;
+      }
+      .logo .dot {
+        width: 22px; height: 22px; border-radius: 6px;
+        background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 12px;
+      }
+      .nav a {
+        display: flex; align-items: center; gap: 10px;
+        padding: 8px 10px; border-radius: 8px;
+        color: #c7cbe0; text-decoration: none; font-size: 13.5px;
+      }
+      .nav a.active, .nav a:hover { background: #1d2340; color: #fff; }
+      .nav .ico { width: 16px; text-align: center; opacity: .8; }
+      .sidebar .foot { margin-top: auto; font-size: 11.5px; color: #6b7194; padding: 8px; }
+      /* ---------- main ---------- */
+      .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .topbar {
+        display: flex; align-items: center; gap: 14px;
+        background: #fff; border-bottom: 1px solid #e6e8ee;
+        padding: 10px 22px;
+      }
+      .topbar .search {
+        flex: 1; max-width: 340px;
+        border: 1px solid #dfe2ea; border-radius: 8px;
+        padding: 7px 12px; font: inherit; color: inherit; background: #f8f9fc;
+      }
+      .avatar {
+        width: 30px; height: 30px; border-radius: 50%;
+        background: #6366f1; color: #fff; font-weight: 700; font-size: 12px;
+        display: inline-flex; align-items: center; justify-content: center;
+      }
+      .content { padding: 22px; display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+      .card {
+        background: #fff; border: 1px solid #e6e8ee; border-radius: 12px;
+        padding: 18px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+      }
+      .card h3 { font-size: 13px; font-weight: 600; color: #6b7280; margin-bottom: 6px; }
+      .stat .num { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; }
+      .stat .delta { font-size: 12px; font-weight: 600; }
+      .up { color: #0f9d58; } .down { color: #d93025; }
+      .span3 { grid-column: span 3; } .span4 { grid-column: span 4; }
+      .span6 { grid-column: span 6; } .span8 { grid-column: span 8; } .span12 { grid-column: span 12; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th { text-align: left; color: #6b7280; font-weight: 600; padding: 8px 10px; border-bottom: 1px solid #eef0f4; }
+      td { padding: 9px 10px; border-bottom: 1px solid #f2f4f8; }
+      tr:last-child td { border-bottom: 0; }
+      .pill-status { font-size: 11.5px; font-weight: 600; border-radius: 99px; padding: 2px 9px; }
+      .ok { background: #e6f6ec; color: #0f9d58; }
+      .warn { background: #fdf2e3; color: #b45309; }
+      .bad { background: #fdeaea; color: #d93025; }
+      .btn {
+        font: inherit; font-weight: 600; font-size: 13px;
+        border: 1px solid #d5d9e2; border-radius: 8px;
+        padding: 8px 14px; cursor: pointer; background: #fff; color: #1f2430;
+      }
+      .btn.primary { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+      .btn.primary:hover { background: #4338ca; }
+      .btn.ghost { border-color: transparent; background: transparent; color: #4f46e5; }
+      .btn.danger { background: #fff; border-color: #f0c4c0; color: #d93025; }
+      /* Looks disabled but is still wired — the classic AI-stub control.
+         (aria-disabled only; a real `disabled` attribute would swallow clicks.) */
+      .btn[aria-disabled="true"] {
+        opacity: .45; cursor: not-allowed; background: #eef0f4; border-color: #dfe2ea; color: #6b7280;
+      }
+      .field { margin-bottom: 12px; }
+      .field label { display: block; font-size: 12.5px; font-weight: 600; color: #4b5563; margin-bottom: 5px; }
+      .field input {
+        width: 100%; border: 1px solid #d5d9e2; border-radius: 8px;
+        padding: 8px 11px; font: inherit; color: inherit; background: #fff;
+      }
+      .field input:focus { outline: 2px solid #c7d2fe; border-color: #6366f1; }
+      .hint { font-size: 12px; color: #8b93a7; margin-top: 6px; }
+      #promo-msg { font-size: 12.5px; margin-top: 8px; min-height: 16px; }
+      #promo-msg.ok { color: #0f9d58; background: none; padding: 0; }
+      #promo-msg.err { color: #d93025; background: none; padding: 0; }
+      .demo-notes {
+        margin: 0 22px 22px; font-size: 12.5px; color: #6b7280;
+        border: 1px dashed #c9cddb; border-radius: 10px; padding: 12px 16px; background: #fafbfe;
+      }
+      .demo-notes summary { cursor: pointer; font-weight: 600; color: #4f46e5; }
+      .demo-notes code { background: #eef0f4; border-radius: 4px; padding: 1px 5px; }
+      @media (max-width: 900px) {
+        .sidebar { display: none; }
+        .span3, .span4, .span6, .span8 { grid-column: span 12; }
+      }
+    </style>
   </head>
   <body>
-    <h1>BugReel demo</h1>
-    <p>Broken-app fixtures (dead buttons, silent 500s, JS crashes) arrive in the demo ticket.</p>
-    <script src="/packages/sdk/dist/loader.global.js" data-bugreel-pill="true"></script>
+    <aside class="sidebar">
+      <div class="logo"><span class="dot">◍</span> Pulseboard</div>
+      <nav class="nav">
+        <a href="#" class="active"><span class="ico">▦</span> Overview</a>
+        <a href="#"><span class="ico">📈</span> Analytics</a>
+        <a href="#"><span class="ico">👥</span> Customers</a>
+        <a href="#"><span class="ico">🧾</span> Billing</a>
+        <a href="#"><span class="ico">⚙</span> Settings</a>
+      </nav>
+      <div class="foot">v2.4.1 · us-east-1</div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <input class="search" type="search" placeholder="Search customers, invoices…" aria-label="Search" />
+        <!--
+          FIXTURE · dead click — the generated handler stores to a state object
+          that nothing renders. No network, no mutation, no console output:
+          the Dead Click detector's ~400ms verdict flags it.
+        -->
+        <button id="deploy-btn" class="btn primary" type="button" data-fixture="dead-click">
+          Deploy
+        </button>
+        <span class="avatar">AL</span>
+      </header>
+
+      <div class="content">
+        <section class="card stat span3">
+          <h3>MRR</h3>
+          <div class="num">$48,210</div>
+          <div class="delta up">▲ 12.4% vs last month</div>
+        </section>
+        <section class="card stat span3">
+          <h3>Active users</h3>
+          <div class="num">3,241</div>
+          <div class="delta up">▲ 4.1%</div>
+        </section>
+        <section class="card stat span3">
+          <h3>Churn</h3>
+          <div class="num">1.9%</div>
+          <div class="delta down">▲ 0.3%</div>
+        </section>
+        <section class="card stat span3">
+          <h3>Uptime</h3>
+          <div class="num">99.98%</div>
+          <div class="delta up">30 days</div>
+        </section>
+
+        <section class="card span8">
+          <h3>Revenue</h3>
+          <svg viewBox="0 0 520 140" width="100%" height="140" role="img" aria-label="Revenue chart">
+            <polyline
+              points="0,110 45,98 90,104 135,80 180,88 225,62 270,70 315,48 360,55 405,34 450,42 495,20 520,26"
+              fill="none" stroke="#6366f1" stroke-width="2.5" stroke-linejoin="round"
+            />
+            <polyline
+              points="0,110 45,98 90,104 135,80 180,88 225,62 270,70 315,48 360,55 405,34 450,42 495,20 520,26 520,140 0,140"
+              fill="rgba(99,102,241,.08)" stroke="none"
+            />
+            <line x1="0" y1="139" x2="520" y2="139" stroke="#e6e8ee" />
+          </svg>
+        </section>
+
+        <section class="card span4">
+          <h3>Workspace settings</h3>
+          <div class="field">
+            <label for="ws-name">Workspace name</label>
+            <input id="ws-name" name="workspace" type="text" value="Acme HQ" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="ws-region">Region</label>
+            <input id="ws-region" name="region" type="text" value="us-east" autocomplete="off" />
+          </div>
+          <!--
+            FIXTURE · silent failure — POST /api/save returns 500 (this static
+            demo has no backend; serve.mjs cans one). The generated handler
+            swallowed the non-ok branch, so nothing renders: the Silent
+            Failure detector fires once the ~2s error-UI watch expires.
+          -->
+          <button id="save-btn" class="btn primary" type="button" data-fixture="silent-500">
+            Save changes
+          </button>
+          <p class="hint">Changes sync to all members instantly.</p>
+        </section>
+
+        <section class="card span8">
+          <h3>Recent signups</h3>
+          <table>
+            <thead>
+              <tr><th>Customer</th><th>Plan</th><th>MRR</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Nimbus Retail</td><td>Growth</td><td>$240</td><td><span class="pill-status ok">Active</span></td></tr>
+              <tr><td>Harbor &amp; Co</td><td>Scale</td><td>$890</td><td><span class="pill-status ok">Active</span></td></tr>
+              <tr><td>Feather Labs</td><td>Starter</td><td>$49</td><td><span class="pill-status warn">Trial</span></td></tr>
+              <tr><td>Quartz Media</td><td>Growth</td><td>$310</td><td><span class="pill-status bad">Past due</span></td></tr>
+              <tr><td>Alloy Fitness</td><td>Scale</td><td>$1,120</td><td><span class="pill-status ok">Active</span></td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="card span4">
+          <h3>Billing</h3>
+          <div class="field">
+            <!--
+              FIXTURE · input story — a plain text field (not secret per the
+              Privacy Firewall): typing + committing records the literal value,
+              so the Story reads "Typed 'SAVE20' into 'Promo Code'".
+            -->
+            <label for="promo">Promo Code</label>
+            <input
+              id="promo"
+              name="promo"
+              type="text"
+              aria-label="Promo Code"
+              placeholder="e.g. SAVE20"
+              autocomplete="off"
+            />
+          </div>
+          <button id="apply-promo" class="btn" type="button" data-fixture="promo-input">
+            Apply
+          </button>
+          <p id="promo-msg" aria-live="polite"></p>
+        </section>
+
+        <section class="card span6">
+          <h3>Background jobs</h3>
+          <p class="hint">Last billing sync ran 2 hours ago.</p>
+          <!--
+            FIXTURE · rage-click bait — styled and flagged to look disabled,
+            but the click handler is still wired (the AI never gated it).
+            Each press only nudges a data-* attribute: technically a DOM
+            effect, visibly nothing. Three clicks inside one second trips
+            the Rage Click detector.
+          -->
+          <button
+            id="sync-btn"
+            class="btn"
+            type="button"
+            aria-disabled="true"
+            data-attempts="0"
+            data-fixture="rage-click"
+          >
+            Sync now
+          </button>
+          <span class="hint" id="usage-out">Usage data updates hourly.</span>
+        </section>
+
+        <section class="card span6">
+          <h3>Danger zone</h3>
+          <p class="hint">Recompute billable usage for the current period.</p>
+          <!--
+            FIXTURE · JS crash — reads `.total` off usage data that never
+            loaded: a real uncaught TypeError, captured as an error event
+            with a plain-English story step.
+          -->
+          <button id="recalc-btn" class="btn danger" type="button" data-fixture="js-crash">
+            Recalculate usage
+          </button>
+        </section>
+      </div>
+
+      <details class="demo-notes">
+        <summary>This dashboard is deliberately broken (BugReel demo)</summary>
+        <p>
+          Planted bugs for the SDK to catch: <code>Deploy</code> does nothing (dead click),
+          <code>Save changes</code> POSTs to a missing backend and swallows the 500 (silent failure),
+          <code>Sync now</code> only looks disabled (rage-click bait),
+          <code>Recalculate usage</code> throws a real TypeError, and the promo field exercises
+          input capture (try <code>SAVE20</code>). File the report with
+          <code>Ctrl+Shift+B</code> or the floating “Report a bug” pill — every finding shows up
+          in “What Happened”.
+        </p>
+      </details>
+    </div>
+
+    <script>
+      // Demo instrumentation — listens to the SDK's public DOM events so the
+      // e2e suite can read the compiled report (no mocks, no SDK internals).
+      window.__report = undefined;
+      window.__opened = false;
+      document.addEventListener('bugreel:report', function (e) {
+        window.__report = e.detail && e.detail.report;
+      });
+      document.addEventListener('bugreel:open', function () {
+        window.__opened = true;
+      });
+
+      // All "app state" lives in memory — exactly like an AI-generated stub
+      // that wires handlers to nothing observable.
+      var state = { deployQueued: false, promo: null /* usage is never populated */ };
+
+      // Dead click: writes to state and renders nothing. Zero observable
+      // effect → the detector's ~400ms liveness verdict flags it.
+      document.getElementById('deploy-btn').addEventListener('click', function () {
+        state.deployQueued = true;
+      });
+
+      // Silent failure: the fetch 500s (serve.mjs cans /api/*); the generated
+      // code only handled the happy path, so the error never renders.
+      document.getElementById('save-btn').addEventListener('click', function () {
+        fetch('/api/save', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ workspace: 'Acme HQ', region: 'us-east' }),
+        })
+          .then(function (res) {
+            if (res.ok) {
+              state.saved = true; // unreachable today — and the !ok branch was never written
+            }
+          })
+          .catch(function () {});
+      });
+
+      // Rage-click bait: looks disabled but still receives clicks. Only a
+      // data-attribute bump — a DOM effect that keeps these clicks out of
+      // dead-click territory while nothing visibly happens.
+      document.getElementById('sync-btn').addEventListener('click', function (e) {
+        var el = e.currentTarget;
+        el.dataset.attempts = String(Number(el.dataset.attempts || 0) + 1);
+      });
+
+      // JS crash: usage totals were never fetched, so .total throws for real.
+      document.getElementById('recalc-btn').addEventListener('click', function () {
+        document.getElementById('usage-out').textContent =
+          'Projected: ' + state.usage.total.toFixed(1) + 'k';
+      });
+
+      // Promo code: a working fixture — commit (blur/Enter) records the input
+      // event; Apply renders the outcome into the page.
+      document.getElementById('apply-promo').addEventListener('click', function () {
+        var input = document.getElementById('promo');
+        var msg = document.getElementById('promo-msg');
+        var code = input.value.trim().toUpperCase();
+        state.promo = code;
+        if (code === 'SAVE20') {
+          msg.textContent = 'SAVE20 applied — 20% off your next invoice.';
+          msg.className = 'ok';
+        } else if (code) {
+          msg.textContent = '"' + code + '" isn\u2019t a valid code.';
+          msg.className = 'err';
+        } else {
+          msg.textContent = 'Enter a code first.';
+          msg.className = 'err';
+        }
+      });
+    </script>
   </body>
 </html>

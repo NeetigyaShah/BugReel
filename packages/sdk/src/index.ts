@@ -1,36 +1,38 @@
+import { noopHandle, openActive, startBugReel, version } from './app';
+import { createWorkerRuntime } from './worker/runtime';
+import { detectors } from './worker/detectors';
+import { scrubEvent } from './firewall/stage2';
+import { idleWorker } from './localWorker';
+import { installCapture } from './capture';
+import type { BugReelConfig, BugReelHandle } from './app';
+import type { WorkerLike } from './transport';
+
 export * from './types';
-export const version = '0.1.0';
+export { version };
+export type { BugReelConfig, BugReelHandle };
 
-export interface BugReelConfig {
-  webhookUrl?: string;
-  hotkey?: string;
-  pill?: 'auto' | boolean;
-  shake?: boolean;
-  privacyMode?: 'standard' | 'strict';
-  user?: { id?: string; email?: string };
-  project?: string;
-  app?: string;
-}
+/** The sibling worker bundle emitted next to this module (bundlers rebase it). */
+const workerUrl = () => new URL('worker.global.js', import.meta.url);
 
-export interface BugReelHandle {
-  open(): void;
-  destroy(): void;
-}
-
-let active: BugReelHandle | undefined;
-
+/**
+ * npm entry — `initBugReel({...})` from a bundler app. The npm chunk is not
+ * size-budgeted, so it carries the full CSP fallback chain: direct Worker →
+ * fetched source (blob/eval) → the real runtime in idle slices.
+ */
 export function initBugReel(config: BugReelConfig = {}): BugReelHandle {
-  const handle: BugReelHandle = {
-    open() {},
-    destroy() {
-      if (active === handle) active = undefined;
-    },
-  };
-  void config;
-  active = handle;
-  return handle;
+  try {
+    return startBugReel(config, {
+      scriptUrl: import.meta.url,
+      makeWorker: () => new Worker(workerUrl()) as unknown as WorkerLike,
+      fallback: () => idleWorker(createWorkerRuntime({ detectors, scrubEvent })),
+      installCapture, // static import — installs synchronously, no capture gap
+    });
+  } catch {
+    return noopHandle;
+  }
 }
 
+/** `BugReel.open()` — programmatic trigger for custom entry points. */
 export function openBugReel(): void {
-  active?.open();
+  openActive();
 }

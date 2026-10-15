@@ -2,9 +2,27 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <script src="../../packages/sdk/dist/loader.global.js"></script>
+    <!-- auto-init via data-* attributes -->
+    <script src="../../packages/sdk/dist/loader.global.js" data-bugreel-pill="true"></script>
   </head>
   <body>
     <h1>loader fixture</h1>
+    <button id="btn">do thing</button>
+    <input id="field" />
+    <script>
+      window.__report = undefined;
+      window.__opened = false;
+      document.addEventListener('bugreel:report', (e) => {
+        window.__report = e.detail;
+      });
+      document.addEventListener('bugreel:open', () => {
+        window.__opened = true;
+      });
+      document.getElementById('btn').addEventListener('click', () => {
+        document.body.insertAdjacentHTML('beforeend', '<div id="out">done</div>');
+        fetch('/api/never-here').catch(() => {});
+        console.error('fixture-error');
+      });
+    </script>
   </body>
 </html>

@@ -8,9 +8,20 @@ export default defineConfig([
     clean: true,
   },
   {
+    // No globalName: loader.ts assigns `globalThis.BugReel` itself, which keeps
+    // the ~450B esbuild export-interop shim out of the size-budgeted chunk.
     entry: { loader: 'src/loader.ts' },
     format: ['iife'],
-    globalName: 'BugReel',
+    minify: true,
+    outExtension: () => ({ js: '.global.js' }),
+  },
+  {
+    // Lazy capture chunk — injected as a classic <script> by the CDN loader
+    // (and statically imported by the npm entry) so heavy capture paths stay
+    // out of the size-budgeted loader chunk.
+    entry: { capture: 'src/capture.ts' },
+    format: ['iife'],
+    globalName: 'BugReelCapture',
     minify: true,
     outExtension: () => ({ js: '.global.js' }),
   },

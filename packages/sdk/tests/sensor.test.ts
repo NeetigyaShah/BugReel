@@ -6,7 +6,7 @@ import {
   type SensorOptions,
 } from '../src/sensor';
 import type { ClickEvent, InputEvent, NetworkEvent, RouteEvent } from '../src/types';
-import { collect, el, FakeMutationObserver, FakeWindow } from './fakes';
+import { collect, domEl, el, FakeMutationObserver, FakeWindow } from './fakes';
 
 let win: FakeWindow;
 let idCounter: number;
@@ -94,10 +94,29 @@ describe('click capture', () => {
     expect(sink.events[1]).toMatchObject({ type: 'fetch', url: '/api' });
   });
 
-  it('emits nothing when stage 1 masks the element', () => {
-    const { sink } = makeSensor({ describeTarget: () => undefined });
-    win.fire('click', { target: el('INPUT', { type: 'password' }) });
+  it('emits nothing when the stage-1 gate blocks the element', () => {
+    const { sink } = makeSensor({ blocked: () => true });
+    win.fire('click', { target: el('INPUT') });
     expect(sink.events).toHaveLength(0);
+    expect(sink.annotations).toHaveLength(0);
+  });
+
+  it('runs the real stage-1 gate by default — password fields never produce events', () => {
+    const { sink } = makeSensor();
+    const password = domEl('input', { attrs: { type: 'password' } });
+    win.fire('click', { target: password });
+    win.fire('change', { target: password });
+    expect(sink.events).toHaveLength(0);
+  });
+
+  it('uses a bare selector until the capture chunk registers the rich describer', () => {
+    const { sink, sensor } = makeSensor();
+    win.fire('click', { target: el('BUTTON', { id: 'pay' }) });
+    expect((sink.events[0] as ClickEvent).target).toEqual({ selector: 'button#pay' });
+
+    sensor.bridge.setDescribeTarget(() => ({ selector: 'form > button', label: 'Pay Now' }));
+    win.fire('click', { target: el('BUTTON') });
+    expect((sink.events[1] as ClickEvent).target).toEqual({ selector: 'form > button', label: 'Pay Now' });
   });
 });
 
@@ -118,15 +137,13 @@ describe('input capture', () => {
     expect(sink.events).toHaveLength(0);
   });
 
-  it('passes the strict privacy flag to scrubInputValue', () => {
-    const scrub = vi.fn((_el: unknown, value: string) => value);
-    const field = el('INPUT', { value: 'secret' });
-    makeSensor({ strict: true, scrubInputValue: scrub });
-    win.fire('change', { target: field });
-    expect(scrub).toHaveBeenCalledWith(field, 'secret', { strict: true });
+  it('records only the length in strict privacy mode', () => {
+    const { sink } = makeSensor({ strict: true });
+    win.fire('change', { target: el('INPUT', { value: 'SAVE20' }) });
+    expect((sink.events[0] as InputEvent).value).toBe('[6 chars]');
   });
 
-  it('records nothing when stage 1 withholds the value', () => {
+  it('records nothing when the value scrubber withholds it', () => {
     const { sink } = makeSensor({ scrubInputValue: () => undefined });
     win.fire('change', { target: el('INPUT', { value: 'sk-123' }) });
     expect(sink.events).toHaveLength(0);

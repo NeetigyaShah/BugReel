@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createWorkerRuntime } from '../src/worker/runtime';
+import { createWorkerRuntime, isToWorkerMessage } from '../src/worker/runtime';
 import type {
   BugDetector,
   ClickEvent,
@@ -102,6 +102,25 @@ describe('worker runtime', () => {
       expect(out[0].report.events[0]).toMatchObject({ target: { selector: '[scrubbed]' } });
     } else {
       expect.unreachable('expected a bugreel:report message');
+    }
+  });
+
+  it('isToWorkerMessage accepts inbound types only — worker replies must not re-enter as work', () => {
+    const rt = createWorkerRuntime();
+    rt.handleMessage({ type: 'bugreel:event', event: click('r1', T() - 100) });
+    const replies = [
+      { type: 'bugreel:worker-ready' },
+      ...rt.handleMessage(compile()),
+      ...rt.handleMessage({ type: 'bogus' } as unknown as ToWorkerMessage),
+    ];
+    expect(replies.map((m) => m.type)).toEqual(['bugreel:worker-ready', 'bugreel:report', 'bugreel:error']);
+    for (const reply of replies) expect(isToWorkerMessage(reply), reply.type).toBe(false);
+
+    for (const inbound of [compile(), { type: 'bugreel:event', event: click('x', 1) }]) {
+      expect(isToWorkerMessage(inbound), inbound.type).toBe(true);
+    }
+    for (const junk of [null, undefined, 'bugreel:compile', 42, {}, { type: 7 }]) {
+      expect(isToWorkerMessage(junk)).toBe(false);
     }
   });
 

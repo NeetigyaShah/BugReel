@@ -10,6 +10,23 @@ import type {
 
 const DEFAULT_WINDOW_MS = 60_000;
 
+const INBOUND_TYPES: ReadonlySet<string> = new Set<ToWorkerMessage['type']>([
+  'bugreel:event',
+  'bugreel:events',
+  'bugreel:annotate',
+  'bugreel:compile',
+]);
+
+/**
+ * True for messages the worker should handle. The main-thread fallback runs
+ * the worker with `self === window`, so its own replies re-enter `onmessage`;
+ * the shell must drop those instead of answering them (an error reply to an
+ * error reply never terminates).
+ */
+export const isToWorkerMessage = (data: unknown): data is ToWorkerMessage =>
+  typeof (data as { type?: unknown } | null)?.type === 'string' &&
+  INBOUND_TYPES.has((data as { type: string }).type);
+
 export interface WorkerRuntimeOptions {
   windowMs?: number;
   maxEvents?: number;

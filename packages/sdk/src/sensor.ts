@@ -1,4 +1,4 @@
-import { describeTarget, scrubInputValue } from './firewall/stage1';
+import { gateValue, isBlocked } from './firewall/stage1';
 import { guard, uuid } from './util';
 import type { BugReelEventId, EventTargetRef, NetworkEvent, RawBugReelEvent } from './types';
 
@@ -57,11 +57,12 @@ export interface SensorOptions {
   emit(event: RawBugReelEvent): void;
   annotate(eventId: BugReelEventId, patch: Record<string, unknown>): void;
   window?: SensorWindow;
-  /** privacyMode:'strict' — forwarded to the stage-1 value scrubber. */
+  /** privacyMode:'strict' — record input lengths instead of literal values. */
   strict?: boolean;
-  /** Firewall seams — injectable in tests; default to the T05 stage-1 stubs. */
-  describeTarget?(el: Element): EventTargetRef | undefined;
-  scrubInputValue?(el: Element, value: string, opts?: { strict?: boolean }): string | undefined;
+  /** Seams — injectable in tests; default to the stage-1 gate and a bare-selector target. */
+  blocked?(el: Element): boolean;
+  describeTarget?(el: Element): EventTargetRef;
+  scrubInputValue?(value: string, strict?: boolean): string | undefined;
   now?(): number;
   randomId?(): string;
 }
@@ -75,7 +76,15 @@ export interface SensorBridge {
   send(event: RawBugReelEvent): void;
   now(): number;
   randomId(): string;
+  /** Swap in the rich target describer once the lazy capture chunk has loaded. */
+  setDescribeTarget(describe: (el: Element) => EventTargetRef): void;
 }
+
+/** Loader-chunk target: just enough for detectors until `enrich.ts` arrives. */
+const bareTarget = (el: Element): EventTargetRef => {
+  const tag = String(el.tagName).toLowerCase();
+  return { selector: el.id ? `${tag}#${el.id}` : tag };
+};
 
 export interface SensorHandle {
   destroy(): void;
@@ -95,8 +104,9 @@ export function createSensor(options: SensorOptions): SensorHandle {
     (typeof window !== 'undefined' ? (window as unknown as SensorWindow) : undefined);
   const now = options.now ?? (() => Date.now());
   const randomId = options.randomId ?? uuid;
-  const describe = options.describeTarget ?? describeTarget;
-  const scrub = options.scrubInputValue ?? scrubInputValue;
+  const blocked = options.blocked ?? isBlocked;
+  let describe = options.describeTarget ?? bareTarget;
+  const scrub = options.scrubInputValue ?? gateValue;
   const doc = win?.document;
 
   const cleanups: Array<() => void> = [];
@@ -210,9 +220,14 @@ export function createSensor(options: SensorOptions): SensorHandle {
   // ------------------------------------------------------------------
   const onClick = guard((e: { target?: unknown; clientX?: number; clientY?: number }): void => {
     const el = asElement(e?.target);
-    const target = el && describe(el);
-    if (!target) return; // masked subtree — stage 1 says: no event at all
-    const event: RawBugReelEvent = { ...ev(), type: 'click', target, x: e.clientX, y: e.clientY };
+    if (!el || blocked(el)) return; // stage 1: a blocked element produces no event at all
+    const event: RawBugReelEvent = {
+      ...ev(),
+      type: 'click',
+      target: describe(el),
+      x: e.clientX,
+      y: e.clientY,
+    };
     send(event);
     watch(event.id, false, CLICK_WATCH_MS);
   });
@@ -223,16 +238,11 @@ export function createSensor(options: SensorOptions): SensorHandle {
   // ------------------------------------------------------------------
   const onChange = guard((e: { target?: unknown }): void => {
     const el = asElement(e?.target);
-    const target = el && describe(el);
-    if (!target) return;
+    if (!el || blocked(el)) return;
     const raw = (el as HTMLInputElement).value;
-    const value = scrub(
-      el!,
-      typeof raw === 'string' ? raw : String(el!.textContent ?? ''),
-      { strict: options.strict },
-    );
+    const value = scrub(typeof raw === 'string' ? raw : String(el.textContent ?? ''), options.strict);
     if (value === undefined) return;
-    send({ ...ev(), type: 'input', target, value });
+    send({ ...ev(), type: 'input', target: describe(el), value });
   });
 
   // ------------------------------------------------------------------
@@ -267,7 +277,14 @@ export function createSensor(options: SensorOptions): SensorHandle {
 
   let destroyed = false;
   return {
-    bridge: { send, now, randomId },
+    bridge: {
+      send,
+      now,
+      randomId,
+      setDescribeTarget(next) {
+        describe = next;
+      },
+    },
     destroy() {
       if (destroyed) return;
       destroyed = true;

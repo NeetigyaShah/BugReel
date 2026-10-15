@@ -30,6 +30,53 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('target enrichment hand-off', () => {
+  it('registers the rich element describer with the sensor on install', () => {
+    const setDescribeTarget = vi.fn();
+    makeCapture({ setDescribeTarget });
+    expect(setDescribeTarget).toHaveBeenCalledTimes(1);
+    const describe = setDescribeTarget.mock.calls[0]![0] as (el: Element) => { selector: string };
+    expect(describe(el('BUTTON')).selector).toBe('button');
+  });
+
+  it('still installs when the sensor does not offer the hook', () => {
+    expect(() => makeCapture()).not.toThrow();
+  });
+});
+
+describe('pill trigger', () => {
+  const mount = () => {
+    const remove = vi.fn();
+    return { remove, mountPill: vi.fn((_doc: unknown, _onOpen: () => void) => ({ remove })) };
+  };
+
+  it('mounts on localhost in auto mode and wires its click to onOpen', () => {
+    win.location.hostname = 'localhost';
+    const onOpen = vi.fn();
+    const { mountPill } = mount();
+    makeCapture({ pill: 'auto', onOpen, mountPill });
+    expect(mountPill).toHaveBeenCalledTimes(1);
+    mountPill.mock.calls[0]![1]();
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays hidden on production hostnames in auto mode', () => {
+    win.location.hostname = 'app.example.com';
+    const { mountPill } = mount();
+    makeCapture({ pill: 'auto', mountPill });
+    expect(mountPill).not.toHaveBeenCalled();
+  });
+
+  it('pill:true shows on production and is removed on destroy', () => {
+    win.location.hostname = 'app.example.com';
+    const { mountPill, remove } = mount();
+    const { capture } = makeCapture({ pill: true, mountPill });
+    expect(mountPill).toHaveBeenCalledTimes(1);
+    capture.destroy();
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('fetch interception', () => {
   it('emits a network event with status, headers, bodies and duration', async () => {
     win.fetch = vi.fn(async () => fakeResponse(200, '{"ok":true}'));

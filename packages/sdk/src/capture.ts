@@ -1,6 +1,9 @@
+import { describeElement } from './enrich';
+import { mountPill } from './pill';
+import { shouldShowPill } from './triggers';
 import { guard, truncate, uuid } from './util';
 import type { SensorWindow } from './sensor';
-import type { NetworkEvent, RawBugReelEvent } from './types';
+import type { EventTargetRef, NetworkEvent, RawBugReelEvent } from './types';
 
 const BODY_LIMIT = 4_096;
 const SHAKE_THRESHOLD = 25; // m/s² — a firm shake on accelerationIncludingGravity
@@ -20,9 +23,15 @@ export interface CaptureDeps {
    * liveness watches and arms the ~2s error-UI watch on >=400 responses.
    */
   send(event: RawBugReelEvent | NetworkEvent): void;
+  /** Registers the rich element describer (selector/label/heading/rect) with the sensor. */
+  setDescribeTarget?(describe: (el: Element) => EventTargetRef): void;
   /** Opt-in shake trigger (ADR-0007); fires onShake. */
   shake?: boolean;
   onShake?(): void;
+  /** Floating-pill Trigger policy ('auto' = dev surfaces only) and its open callback. */
+  pill?: 'auto' | boolean;
+  onOpen?(): void;
+  mountPill?: typeof mountPill;
   now?(): number;
   randomId?(): string;
 }
@@ -103,6 +112,7 @@ export function installCapture(deps: CaptureDeps): CaptureHandle {
   const randomId = deps.randomId ?? uuid;
   const send = guard(deps.send);
   const ev = () => ({ id: randomId(), at: now() });
+  guard(() => deps.setDescribeTarget?.(describeElement))();
 
   const cleanups: Array<() => void> = [];
 
@@ -384,6 +394,16 @@ export function installCapture(deps: CaptureDeps): CaptureHandle {
       attachMotion();
     }
   }
+
+  // Pill Trigger — chrome, not capture, but it only needs to exist after first
+  // paint, so it rides the lazy chunk instead of spending loader budget.
+  try {
+    const doc = win?.document;
+    if (doc && shouldShowPill(deps.pill, { hostname: win?.location?.hostname, search: win?.location?.search })) {
+      const pill = (deps.mountPill ?? mountPill)(doc, () => deps.onOpen?.());
+      if (pill) cleanups.push(() => pill.remove());
+    }
+  } catch {}
 
   let destroyed = false;
   return {

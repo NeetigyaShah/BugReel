@@ -7,8 +7,7 @@ import {
   type Transport,
   type WorkerLike,
 } from './transport';
-import { hotkeyMatches, isEditableTarget, resolveHotkey, shouldShowPill, type HotkeyEventLike } from './triggers';
-import { mountPill } from './pill';
+import { hotkeyMatches, isEditableTarget, resolveHotkey, type HotkeyEventLike } from './triggers';
 import { scheduleIdle, uuid } from './util';
 
 export const version = '0.1.0';
@@ -54,7 +53,6 @@ export interface BugReelEnv {
    */
   installCapture?(deps: CaptureDeps): CaptureHandle | undefined;
   scheduleIdle?(cb: () => void): void;
-  mountPill?(doc: SensorWindow['document'], onOpen: () => void): { remove(): void } | undefined;
 }
 
 export const noopHandle: BugReelHandle = {
@@ -163,7 +161,7 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
     strict: config.privacyMode === 'strict',
   });
 
-  // Heavy capture paths (fetch/XHR/console/error/shake) install lazily so the
+  // Heavy capture paths (fetch/XHR/console/error/shake) and the pill install lazily so the
   // loader chunk stays under its size budget — the npm entry hands over the
   // module synchronously; CDN injects sibling `capture.global.js` as a
   // classic <script>, allowed by the same script-src that ran the loader.
@@ -172,8 +170,11 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
     const deps: CaptureDeps = {
       window: win,
       send: sensor.bridge.send,
+      setDescribeTarget: sensor.bridge.setDescribeTarget,
       shake: !!config.shake,
       onShake: open,
+      pill: config.pill,
+      onOpen: open,
     };
     if (env.installCapture) {
       capture = env.installCapture(deps);
@@ -203,20 +204,6 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
     win.addEventListener('keydown', onKeydown as (e: never) => void);
   } catch {}
 
-  // Pill trigger — environment policy decides visibility (ADR-0007).
-  let pillEl: { remove(): void } | undefined;
-  try {
-    if (
-      doc &&
-      shouldShowPill(config.pill, {
-        hostname: win.location?.hostname,
-        search: win.location?.search,
-      })
-    ) {
-      pillEl = (env.mountPill ?? mountPill)(doc, open);
-    }
-  } catch {}
-
   const handle: BugReelHandle = {
     open,
     destroy() {
@@ -231,9 +218,6 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
       } catch {}
       try {
         win.removeEventListener('keydown', onKeydown as (e: never) => void);
-      } catch {}
-      try {
-        pillEl?.remove();
       } catch {}
       if (active === handle) active = undefined;
     },

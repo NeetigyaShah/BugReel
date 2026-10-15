@@ -198,3 +198,81 @@ export const collect = () => {
 
 export const el = (tagName: string, extra: Record<string, unknown> = {}) =>
   ({ tagName, ...extra }) as unknown as Element;
+
+export interface FakeDomInit {
+  attrs?: Record<string, string>;
+  innerText?: string;
+  textContent?: string;
+  children?: FakeDomElement[];
+  rect?: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * Duck-typed Element for the DOM-reading modules (stage-1 gate, enrich):
+ * tagName, getAttribute, parentElement, closest, querySelector, innerText,
+ * textContent, getBoundingClientRect. `closest` understands only the
+ * `[attr]` / `[attr=value i]` selector lists those modules use.
+ */
+export class FakeDomElement {
+  readonly tagName: string;
+  readonly innerText?: string;
+  readonly textContent?: string;
+  parentElement: FakeDomElement | null = null;
+  private readonly attrs: Record<string, string>;
+  private readonly children: FakeDomElement[] = [];
+  private readonly rect?: FakeDomInit['rect'];
+
+  constructor(tagName: string, init: FakeDomInit = {}) {
+    this.tagName = tagName.toUpperCase();
+    this.attrs = { ...(init.attrs ?? {}) };
+    if (init.innerText !== undefined) this.innerText = init.innerText;
+    if (init.textContent !== undefined) this.textContent = init.textContent;
+    this.rect = init.rect;
+    for (const child of init.children ?? []) this.append(child);
+  }
+
+  append(child: FakeDomElement): FakeDomElement {
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+
+  getAttribute(name: string): string | null {
+    return name in this.attrs ? this.attrs[name]! : null;
+  }
+
+  getBoundingClientRect() {
+    return this.rect ?? { x: 0, y: 0, width: 0, height: 0 };
+  }
+
+  closest(selectors: string): FakeDomElement | null {
+    const tests = selectors.split(',').map((part) => {
+      const [, name, value] = /^\[([\w-]+)(?:=(\w+)(?: i)?)?\]$/.exec(part.trim())!;
+      return (node: FakeDomElement) => {
+        const actual = node.getAttribute(name!);
+        return value === undefined ? actual !== null : actual?.toLowerCase() === value;
+      };
+    });
+    for (let node: FakeDomElement | null = this; node; node = node.parentElement) {
+      if (tests.some((test) => test(node!))) return node;
+    }
+    return null;
+  }
+
+  /** Descendant matcher for the `h1..h6,legend` heading selector. */
+  querySelector(selector: string): FakeDomElement | null {
+    const wanted = selector.split(',').map((s) => s.trim().toUpperCase());
+    const visit = (node: FakeDomElement): FakeDomElement | null => {
+      for (const child of node.children) {
+        if (wanted.includes(child.tagName)) return child;
+        const hit = visit(child);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return visit(this);
+  }
+}
+
+export const domEl = (tag: string, init?: FakeDomInit): Element =>
+  new FakeDomElement(tag, init) as unknown as Element;

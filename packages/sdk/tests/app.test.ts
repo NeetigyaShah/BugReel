@@ -135,20 +135,14 @@ describe('startBugReel wiring', () => {
     handle.destroy();
   });
 
-  it('mounts the pill on localhost in auto mode and wires its click to open', () => {
-    win.location.hostname = 'localhost';
-    const mountPill = vi.fn(() => ({ remove: vi.fn() }));
+  it('hands the pill policy and open flow to the lazy capture chunk', () => {
+    const installCapture = vi.fn((_deps: unknown) => ({ destroy: vi.fn() }));
     const { env } = makeEnv();
-    const handle = startBugReel({ pill: 'auto' }, { ...env, mountPill });
-    expect(mountPill).toHaveBeenCalledTimes(1);
-    handle.destroy();
-  });
-
-  it('does not mount the pill on production hostnames in auto mode', () => {
-    const mountPill = vi.fn(() => ({ remove: vi.fn() }));
-    const { env } = makeEnv();
-    const handle = startBugReel({}, { ...env, mountPill });
-    expect(mountPill).not.toHaveBeenCalled();
+    const handle = startBugReel({ pill: 'auto' }, { ...env, installCapture });
+    const deps = installCapture.mock.calls[0]![0] as { pill?: unknown; onOpen?: () => void };
+    expect(deps.pill).toBe('auto');
+    deps.onOpen!();
+    expect(win.document.dispatched.map((e) => e.type)).toEqual(['bugreel:open']);
     handle.destroy();
   });
 

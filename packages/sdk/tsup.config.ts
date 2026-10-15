@@ -26,8 +26,17 @@ export default defineConfig([
     outExtension: () => ({ js: '.global.js' }),
   },
   {
-    entry: { worker: 'src/worker.ts', modal: 'src/modal.ts' },
+    entry: { worker: 'src/worker.ts' },
     format: ['iife'],
+    minify: true,
+    outExtension: () => ({ js: '.global.js' }),
+  },
+  {
+    // Chunk 3 — the Shadow-DOM modal, injected as a classic sibling <script>
+    // on first open (CDN) or resolved via dynamic import (npm).
+    entry: { modal: 'src/modal.ts' },
+    format: ['iife'],
+    globalName: 'BugReelModal',
     minify: true,
     outExtension: () => ({ js: '.global.js' }),
   },

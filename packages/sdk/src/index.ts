@@ -9,6 +9,9 @@ import type { WorkerLike } from './transport';
 
 export * from './types';
 export { packBugpack } from './worker/bugpack';
+export { createReportStore } from './store';
+export type { ReportStore, StoredReportMeta } from './store';
+export type { ModalDeps, ModalHandle } from './modal';
 export { version };
 export type { BugReelConfig, BugReelHandle };
 
@@ -26,7 +29,13 @@ export function initBugReel(config: BugReelConfig = {}): BugReelHandle {
       scriptUrl: import.meta.url,
       makeWorker: () => new Worker(workerUrl()) as unknown as WorkerLike,
       fallback: () => idleWorker(createWorkerRuntime({ detectors, scrubEvent })),
-      installCapture, // static import — installs synchronously, no capture gap
+      // installCapture installs synchronously (no capture gap); the npm path
+      // also hands it a dynamic-import modal installer so chunk 3 stays lazy.
+      installCapture(deps) {
+        deps.installModal = (modalDeps) =>
+          import('./modal').then((m) => m.installModal(modalDeps));
+        return installCapture(deps);
+      },
     });
   } catch {
     return noopHandle;

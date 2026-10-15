@@ -1,9 +1,16 @@
 import { describeElement } from './enrich';
 import { mountPill } from './pill';
 import { shouldShowPill } from './triggers';
+import { injectScript } from './transport';
 import { guard, truncate, uuid } from './util';
 import type { SensorWindow } from './sensor';
-import type { EventTargetRef, NetworkEvent, RawBugReelEvent } from './types';
+import type { ModalDeps, ModalHandle } from './modal';
+import type {
+  EventTargetRef,
+  NetworkEvent,
+  RawBugReelEvent,
+  ToWorkerMessage,
+} from './types';
 
 const BODY_LIMIT = 4_096;
 const SHAKE_THRESHOLD = 25; // m/s² — a firm shake on accelerationIncludingGravity
@@ -32,6 +39,18 @@ export interface CaptureDeps {
   pill?: 'auto' | boolean;
   onOpen?(): void;
   mountPill?: typeof mountPill;
+  /**
+   * Worker channel handed to the modal (chunk 3) once it installs — the app
+   * passes `transport.send`. Without it the modal still renders reports but
+   * cannot request re-compiles or .bugpack packing.
+   */
+  workerSend?(message: ToWorkerMessage): void;
+  /**
+   * Modal installer — the npm entry injects `import('./modal')` so chunk 3
+   * resolves through the bundler instead of a sibling <script>. Absent → the
+   * CDN path injects sibling `modal.global.js`.
+   */
+  installModal?(deps: ModalDeps): ModalHandle | Promise<ModalHandle | undefined> | undefined;
   now?(): number;
   randomId?(): string;
 }
@@ -404,6 +423,64 @@ export function installCapture(deps: CaptureDeps): CaptureHandle {
       if (pill) cleanups.push(() => pill.remove());
     }
   } catch {}
+
+  // ------------------------------------------------------------------
+  // Modal bootstrap (chunk 3). The loader keeps its budget by delegating the
+  // whole lazy load here: the first `bugreel:open` event installs the modal.
+  // npm hands us `deps.installModal` (a dynamic-import seam, see index.ts);
+  // the CDN path injects sibling `modal.global.js` as a classic <script>
+  // (same script-src that loaded us) and reads `globalThis.BugReelModal`.
+  // ------------------------------------------------------------------
+  let modalLoaded = false;
+  const trackModal = (modal: ModalHandle | undefined): boolean => {
+    if (!modal) return false;
+    cleanups.push(() => {
+      try {
+        modal.destroy();
+      } catch {}
+    });
+    return true;
+  };
+  const installGlobal = (modalDeps: ModalDeps): ModalHandle | undefined => {
+    try {
+      return (
+        globalThis as { BugReelModal?: { installModal?(d: ModalDeps): ModalHandle | undefined } }
+      ).BugReelModal?.installModal?.(modalDeps);
+    } catch {
+      return undefined;
+    }
+  };
+  const loadModal = guard((): void => {
+    if (modalLoaded) return;
+    modalLoaded = true;
+    const modalDeps: ModalDeps = { window: win, send: deps.workerSend };
+    // npm path — the entry injected an import('./modal') installer.
+    if (deps.installModal) {
+      try {
+        void Promise.resolve(deps.installModal(modalDeps)).then(trackModal).catch(() => {});
+      } catch {}
+      return;
+    }
+    if (trackModal(installGlobal(modalDeps))) return;
+    // Resolve the sibling URL from our own <script> element — it sits in the
+    // DOM with the exact origin/path the loader used, so no plumbing needed.
+    let src: string | undefined;
+    try {
+      const scripts = (
+        win?.document as unknown as {
+          getElementsByTagName?(tag: string): ArrayLike<{ src?: string }>;
+        }
+      )?.getElementsByTagName?.('script');
+      for (const s of Array.from(scripts ?? [])) {
+        if (typeof s?.src === 'string' && s.src.endsWith('capture.global.js')) {
+          src = new URL('modal.global.js', s.src).href;
+          break;
+        }
+      }
+    } catch {}
+    injectScript(win?.document, src, () => trackModal(installGlobal(modalDeps)));
+  });
+  on(win?.document as unknown as EventTargetLike | undefined, 'bugreel:open', loadModal);
 
   let destroyed = false;
   return {

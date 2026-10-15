@@ -149,9 +149,13 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
       env.fallback ??
       (() => scriptTagWorker(win, config.workerUrl ?? siblingUrl('worker.global.js'), idle)),
     scheduleIdle: idle,
-    // The report a trigger asked for is published for the modal (T08).
+    // The report a trigger asked for is published for the modal (T08); other
+    // replies (bugreel:bugpack, bugreel:error) forward whole so listeners can
+    // match requestIds.
     onMessage: (message) => {
-      if (message?.type === 'bugreel:report') dispatch('bugreel:report', message.report);
+      if (message?.type) {
+        dispatch(message.type, message.type === 'bugreel:report' ? message.report : message);
+      }
     },
   });
 
@@ -177,6 +181,10 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
       onShake: open,
       pill: config.pill,
       onOpen: open,
+      // The lazy capture chunk also owns the modal bootstrap (chunk 3): it
+      // listens for `bugreel:open` and injects sibling `modal.global.js`,
+      // keeping the whole loader addition to this one field.
+      workerSend: transport.send,
     };
     if (env.installCapture) {
       capture = env.installCapture(deps);

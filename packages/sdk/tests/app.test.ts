@@ -46,11 +46,11 @@ describe('startBugReel wiring', () => {
     const compile = worker.posted.find((m: ToWorkerMessage) => m.type === 'bugreel:compile');
     expect(compile).toBeTruthy();
     if (compile?.type === 'bugreel:compile') {
-      expect(compile.meta.url).toBe('https://app.test/home');
-      expect(compile.meta.userAgent).toBe('fake-agent/1.0');
-      expect(compile.meta.viewport).toEqual({ width: 1280, height: 800 });
-      expect(compile.meta.sdkVersion).toMatch(/^\d+\.\d+\.\d+$/);
-      expect(compile.meta.sessionId).toBeTruthy();
+      expect(compile.meta?.url).toBe('https://app.test/home');
+      expect(compile.meta?.userAgent).toBe('fake-agent/1.0');
+      expect(compile.meta?.viewport).toEqual({ width: 1280, height: 800 });
+      expect(compile.meta?.sdkVersion).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(compile.meta?.sessionId).toBeTruthy();
       expect(compile.requestId).toBeTruthy();
     }
     handle.destroy();
@@ -158,6 +158,32 @@ describe('startBugReel wiring', () => {
     expect(deps.pill).toBe('auto');
     deps.onOpen!();
     expect(win.document.dispatched.map((e) => e.type)).toEqual(['bugreel:open']);
+    handle.destroy();
+  });
+
+  it('hands the worker channel to the capture chunk for the modal (workerSend)', () => {
+    const installCapture = vi.fn((_deps: unknown) => ({ destroy: vi.fn() }));
+    const { env, worker } = makeEnv();
+    const handle = startBugReel({}, { ...env, installCapture });
+    worker.ready();
+    const deps = installCapture.mock.calls[0]![0] as { workerSend?: (m: ToWorkerMessage) => void };
+    expect(typeof deps.workerSend).toBe('function');
+    deps.workerSend!({ type: 'bugreel:pack', requestId: 'r1' });
+    expect(worker.posted.at(-1)).toMatchObject({ type: 'bugreel:pack', requestId: 'r1' });
+    handle.destroy();
+  });
+
+  it('forwards bugreel:bugpack and bugreel:error replies to document listeners', () => {
+    const { env, worker } = makeEnv();
+    const handle = startBugReel({}, env);
+    worker.ready();
+    worker.deliver({ type: 'bugreel:bugpack', requestId: 'p1', bugpack: new Uint8Array([1]) });
+    worker.deliver({ type: 'bugreel:error', requestId: 'p1', message: 'boom' });
+    const types = win.document.dispatched.map((e) => e.type);
+    expect(types).toContain('bugreel:bugpack');
+    expect(types).toContain('bugreel:error');
+    const bugpack = win.document.dispatched.find((e) => e.type === 'bugreel:bugpack');
+    expect(bugpack?.detail).toMatchObject({ requestId: 'p1' });
     handle.destroy();
   });
 

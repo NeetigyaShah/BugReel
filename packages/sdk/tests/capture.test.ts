@@ -297,3 +297,74 @@ describe('teardown', () => {
     expect(win.listeners).toHaveLength(0);
   });
 });
+
+describe('modal bootstrap (chunk 3)', () => {
+  it('does nothing until the first bugreel:open event', () => {
+    const installModal = vi.fn();
+    makeCapture({ installModal });
+    expect(installModal).not.toHaveBeenCalled();
+    win.document.fire('bugreel:open', {});
+    expect(installModal).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands window + workerSend to the modal deps (npm path)', () => {
+    const installModal = vi.fn((_deps: unknown) => ({ el: {} as HTMLElement, open() {}, close() {}, destroy: vi.fn() }));
+    const workerSend = vi.fn();
+    makeCapture({ installModal, workerSend });
+    win.document.fire('bugreel:open', {});
+    const deps = installModal.mock.calls[0]![0] as { window?: unknown; send?: unknown };
+    expect(deps.window).toBe(win);
+    expect(deps.send).toBe(workerSend);
+    // Idempotent — a second open does not re-install.
+    win.document.fire('bugreel:open', {});
+    expect(installModal).toHaveBeenCalledTimes(1);
+  });
+
+  it('installs an already-present globalThis.BugReelModal without a script', () => {
+    const destroy = vi.fn();
+    const installModal = vi.fn(() => ({ el: {} as HTMLElement, open() {}, close() {}, destroy }));
+    (globalThis as { BugReelModal?: unknown }).BugReelModal = { installModal };
+    try {
+      const { capture } = makeCapture();
+      win.document.fire('bugreel:open', {});
+      expect(installModal).toHaveBeenCalledTimes(1);
+      // No sibling <script> needed when the global is already installed.
+      expect(win.document.created.filter((e) => e.tag === 'SCRIPT')).toHaveLength(0);
+      capture.destroy();
+      expect(destroy).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (globalThis as { BugReelModal?: unknown }).BugReelModal;
+    }
+  });
+
+  it('CDN path: injects sibling modal.global.js resolved from the capture script', () => {
+    const fakeScript = {
+      tag: 'SCRIPT',
+      src: 'https://cdn.test/lib/capture.global.js',
+      listeners: [],
+      addEventListener() {},
+      removeEventListener() {},
+      remove() {},
+      load() {},
+      innerHTML: '',
+      removed: false,
+      fire() {},
+    };
+    win.document.created.push(fakeScript as never);
+    try {
+      makeCapture();
+      win.document.fire('bugreel:open', {});
+      const script = win.document.created.find(
+        (e) => e.tag === 'SCRIPT' && e.src === 'https://cdn.test/lib/modal.global.js',
+      );
+      expect(script).toBeTruthy();
+      // The chunk lands later — its global installs the modal on script load.
+      const installModal = vi.fn((_deps: unknown) => ({ el: {} as HTMLElement, open() {}, close() {}, destroy: vi.fn() }));
+      (globalThis as { BugReelModal?: unknown }).BugReelModal = { installModal };
+      (script as { onload?: (() => void) | null }).onload?.();
+      expect(installModal).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (globalThis as { BugReelModal?: unknown }).BugReelModal;
+    }
+  });
+});

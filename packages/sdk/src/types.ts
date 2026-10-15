@@ -187,13 +187,20 @@ export type ToWorkerMessage =
   | { type: 'bugreel:event'; event: RawBugReelEvent }
   | { type: 'bugreel:events'; events: RawBugReelEvent[] }
   | { type: 'bugreel:annotate'; eventId: BugReelEventId; patch: Record<string, unknown> }
-  | { type: 'bugreel:compile'; requestId: string; meta: ReportMeta; answers?: ReporterAnswers }
+  | {
+      type: 'bugreel:compile';
+      requestId: string;
+      /** Optional — the worker falls back to the last full meta it received. */
+      meta?: ReportMeta;
+      answers?: ReporterAnswers;
+    }
   | {
       // Named 'pack' on the wire so the 'bugreel:bugpack' reply can never be
       // mistaken for inbound work (reply types must stay out of the echo path).
       type: 'bugreel:pack';
       requestId: string;
-      meta: ReportMeta;
+      /** Optional — the worker falls back to the last full meta it received. */
+      meta?: ReportMeta;
       answers?: ReporterAnswers;
       media?: BugpackMediaEntry[];
       /** Discord 7.5MB guard: keep JSON + markdown + images, drop the rest */

@@ -8,6 +8,8 @@ import type {
   ReporterAnswers,
   ReportMeta,
 } from '../types';
+import { compileCurl, compileMarkdown, compilePlaywright, compilePrompt } from './compilers';
+import { buildStory } from './story';
 
 export interface CompileInput {
   events: RawBugReelEvent[];
@@ -21,23 +23,31 @@ const isNetworkEvent = (e: RawBugReelEvent): e is NetworkEvent =>
 const isConsoleEvent = (e: RawBugReelEvent): e is ConsoleEvent => e.type === 'console';
 
 /**
- * Events + findings -> report.json skeleton. storySteps and the compiled
- * outputs (markdown, cURL, Playwright, Cursor prompt) are filled by the
- * Story Engine in a later ticket; the frozen v1.0 shape lands here.
+ * Events + findings -> report.json. The Story Engine translates scrubbed
+ * events into Story steps and fills every compiled output; report.md is
+ * rendered last because its toolkit embeds the other compilers' output.
  */
 export function compileReport({ events, findings, meta, answers }: CompileInput): BugReelReport {
   if (!meta) throw new Error('compileReport requires report meta');
-  return {
+  const network = events.filter(isNetworkEvent);
+  const report: BugReelReport = {
     schemaVersion: '1.0',
     meta,
     reporterAnswers: answers ?? {},
     findings: [...findings],
-    storySteps: [],
+    storySteps: buildStory(events, findings),
     events: [...events],
-    network: events.filter(isNetworkEvent),
+    network,
     console: events.filter(isConsoleEvent),
-    outputs: { markdown: '' },
+    outputs: {
+      markdown: '',
+      curl: compileCurl(network, meta),
+      playwright: compilePlaywright(events, meta),
+      cursorPrompt: compilePrompt({ events, findings, meta, answers }),
+    },
   };
+  report.outputs.markdown = compileMarkdown(report);
+  return report;
 }
 
 /**

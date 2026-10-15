@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createWorkerRuntime, isToWorkerMessage } from '../src/worker/runtime';
+import { scrubEvent } from '../src/firewall/stage2';
 import type {
   BugDetector,
   ClickEvent,
   DiagnosticFinding,
+  RawBugReelEvent,
   ReportMeta,
   ToWorkerMessage,
 } from '../src/types';
@@ -138,5 +140,38 @@ describe('worker runtime', () => {
       meta: null as unknown as ReportMeta,
     });
     expect(out[0]).toMatchObject({ type: 'bugreel:error', requestId: 'r9' });
+  });
+
+  it('compiled outputs are built only from post-Firewall events', () => {
+    const rt = createWorkerRuntime({ scrubEvent });
+    const secret = 'sk_live_4eC39HqLyjWDarjtT1zdp7dc';
+    rt.handleMessage({
+      type: 'bugreel:event',
+      event: {
+        id: 'n1',
+        at: T() - 500,
+        type: 'fetch',
+        method: 'POST',
+        url: '/api/pay',
+        status: 500,
+        ok: false,
+        requestHeaders: { Authorization: `Bearer ${secret}` },
+        requestBody: `{"card":"4242424242424242","token":"${secret}"}`,
+      } as RawBugReelEvent,
+    });
+    const out = rt.handleMessage(compile());
+    if (out[0]?.type !== 'bugreel:report') expect.unreachable('expected a bugreel:report message');
+    const report = out[0].report;
+    for (const compiled of [
+      report.outputs.markdown,
+      report.outputs.curl ?? '',
+      report.outputs.playwright ?? '',
+      report.outputs.cursorPrompt ?? '',
+      JSON.stringify(report.storySteps),
+    ]) {
+      expect(compiled).not.toContain(secret);
+      expect(compiled).not.toContain('4242424242424242');
+    }
+    expect(report.outputs.curl).toContain('[REDACTED]');
   });
 });

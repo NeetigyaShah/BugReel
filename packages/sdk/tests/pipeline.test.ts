@@ -70,8 +70,12 @@ describe('compileReport', () => {
     expect(report.reporterAnswers).toEqual({});
     expect(report.findings).toEqual([finding]);
     expect(report.events).toEqual(events);
-    expect(report.storySteps).toEqual([]);
-    expect(report.outputs.markdown).toBe('');
+    // story + compiled outputs are filled by the Story Engine (T06)
+    expect(report.storySteps.length).toBe(events.length + 1); // +1 finding step
+    expect(report.outputs.markdown).toContain('# BugReel Bug Report');
+    expect(report.outputs.curl).toContain('curl --request POST');
+    expect(report.outputs.playwright).toContain("page.click");
+    expect(report.outputs.cursorPrompt).toContain('Fix this bug');
   });
 
   it('distills network and console lanes from the raw event stream', () => {

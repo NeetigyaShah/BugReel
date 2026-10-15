@@ -24,36 +24,30 @@ const REDACTED = '[REDACTED]';
 /* ------------------------------------------------------------------ */
 
 /**
- * Left edge of a sensitive key. `_` counts as a separator (snake_case)
- * and a lower/digit→upper transition counts too (camelCase), so
- * `access_token`, `accessToken` and `"token"` all match while `monkey`
- * or `keyboard` do not.
- */
-const KEY_LEFT = String.raw`(?:(?<![a-zA-Z0-9])|(?<=[a-z0-9])(?=[A-Z]))`;
-
-/**
  * Key vocabulary for `key=value` / `"key":"value"` contexts. Union of the
  * ticket's generic list (api-key/token/secret/password) and the URL-param
  * list (key/auth/ssn/card/cvv) plus common auth-flow compound names.
+ *
+ * Matched against a *normalized* identifier (camelCase split into snake_case,
+ * lower-cased) as whole words: `access_token`, `accessToken` and `userPassword`
+ * match while `monkey` and `keyboard` do not. The boundary is checked here
+ * rather than with lookbehind, which Safari < 16.4 cannot even parse.
  */
 const SENSITIVE_KEY = String.raw`(?:api[-_ ]?key|client[-_ ]?secret|(?:access|refresh|id|auth|session|authenticity|csrf|xsrf)[-_ ]?token|token|secret|(?:new|old|current|confirm)[-_ ]?password|password|passwd|pwd|auth(?:entication|orization)|session[-_ ]?id|session|key|ssn|card[-_ ]?num(?:ber)?|card|cvv|cvc|pin|otp|credential|cookie|private[-_ ]?key)s?`;
 
-const QUOTED_VALUE = String.raw`(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`;
+const SENSITIVE_WORD = new RegExp(`(?:^|[^a-z0-9])${SENSITIVE_KEY}(?![a-z0-9])`);
 
-/** `"token": "abc"` / `'password':'x'` — value replaced, key kept. */
-const KV_QUOTED = new RegExp(
-  `${KEY_LEFT}(["']?)(${SENSITIVE_KEY})\\1(\\s*[=:]\\s*)(${QUOTED_VALUE})`,
-  'gi',
-);
+/** `key=`, `"key":`, `'key' :` — identifier plus separator, value left for the next step. */
+const KEY_SEPARATOR = /(["']?)([A-Za-z0-9_.-]+)\1(\s*[=:]\s*)/g;
 
 /**
- * `token=abc` / `key: xyz` / JSON `"password":["a","b"]` — bare value,
- * optional `Bearer ` prefix, or a `[...]`/`{...}` container is replaced.
+ * What a sensitive key holds: a quoted string (quotes kept), or a bare token
+ * (optionally `Bearer `-prefixed) / `[...]` / `{...}` container, replaced whole.
  */
-const KV_BARE = new RegExp(
-  `${KEY_LEFT}(["']?)(${SENSITIVE_KEY})\\1(\\s*[=:]\\s*)(?:Bearer\\s+)?(?:[^\\s"'&,;{}\\[\\]()<>#]+|\\[[^\\]]*\\]|\\{[^}]*\\})`,
-  'gi',
-);
+const VALUE = /(?:Bearer\s+)?(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s"'&,;{}[\]()<>#]+|\[[^\]]*\]|\{[^}]*\})/y;
+
+const isSensitiveKey = (identifier: string): boolean =>
+  SENSITIVE_WORD.test(identifier.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase());
 
 const BEARER_TOKEN = /\bBearer\s+\S+/gi;
 const JWT = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
@@ -92,25 +86,31 @@ const SENSITIVE_HEADERS = new Set([
 /* String scrubbing                                                    */
 /* ------------------------------------------------------------------ */
 
-const kvQuotedReplacer = (
-  _match: string,
-  quote: string,
-  key: string,
-  sep: string,
-  value: string,
-): string => {
-  const q = value.charAt(0);
-  return `${quote}${key}${quote}${sep}${q}${REDACTED}${q}`;
+/**
+ * Replace the value of every sensitive `key=value` / `"key":"value"` pair.
+ * Keys are scanned without consuming their values, so a non-sensitive
+ * container (`{"a":{"token":"x"}}`) never hides a sensitive key nested in it.
+ */
+const scrubKeyValues = (text: string): string => {
+  let out = '';
+  let copied = 0;
+  KEY_SEPARATOR.lastIndex = 0;
+  for (let key = KEY_SEPARATOR.exec(text); key; key = KEY_SEPARATOR.exec(text)) {
+    if (!isSensitiveKey(key[2]!)) continue;
+    VALUE.lastIndex = KEY_SEPARATOR.lastIndex;
+    const value = VALUE.exec(text);
+    if (!value) continue;
+    const quote = /^["']/.test(value[0]) ? value[0].charAt(0) : '';
+    out += `${text.slice(copied, VALUE.lastIndex - value[0].length)}${quote}${REDACTED}${quote}`;
+    copied = VALUE.lastIndex;
+    KEY_SEPARATOR.lastIndex = copied;
+  }
+  return out + text.slice(copied);
 };
-
-const kvBareReplacer = (_match: string, quote: string, key: string, sep: string): string =>
-  `${quote}${key}${quote}${sep}${REDACTED}`;
 
 const scrubString = (value: string): string => {
   if (typeof value !== 'string' || value.length === 0) return value;
-  return value
-    .replace(KV_QUOTED, kvQuotedReplacer)
-    .replace(KV_BARE, kvBareReplacer)
+  return scrubKeyValues(value)
     .replace(BEARER_TOKEN, REDACTED)
     .replace(PEM_BLOCK, REDACTED)
     .replace(JWT, REDACTED)

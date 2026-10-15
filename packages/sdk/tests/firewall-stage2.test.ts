@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { scrubEvent } from '../src/firewall/stage2';
 import { createWorkerRuntime } from '../src/worker/runtime';
@@ -246,6 +248,50 @@ describe('scrubEvent — end to end through the worker runtime', () => {
       expect(JSON.stringify(out[0].report)).not.toContain(JWT_TOKEN);
     } else {
       expect.unreachable('expected a bugreel:report message');
+    }
+  });
+});
+
+describe('scrubEvent — sensitive key detection', () => {
+  const scrubMessage = (message: string): string =>
+    (scrubEvent({ id: 'c', at: 1, type: 'console', level: 'log', message }) as ConsoleEvent).message;
+
+  it('redacts snake_case, camelCase and plain keys alike', () => {
+    expect(scrubMessage('access_token=abc')).toBe('access_token=[REDACTED]');
+    expect(scrubMessage('accessToken=abc')).toBe('accessToken=[REDACTED]');
+    expect(scrubMessage('apiKey=zzz')).toBe('apiKey=[REDACTED]');
+    expect(scrubMessage('TOKEN=abc')).toBe('TOKEN=[REDACTED]');
+    expect(scrubMessage('?a=1&token=abc')).toBe('?a=1&token=[REDACTED]');
+  });
+
+  it('redacts camelCase keys inside quoted JSON, whatever their prefix', () => {
+    expect(scrubMessage('{"userPassword":"hunter2"}')).toBe('{"userPassword":"[REDACTED]"}');
+    expect(scrubMessage('{"adminToken":"t0k3n","name":"Ada"}')).toBe(
+      '{"adminToken":"[REDACTED]","name":"Ada"}',
+    );
+  });
+
+  it('does not touch words that merely contain a keyword', () => {
+    for (const text of ['monkey=abc', 'keyboard=abc', 'turkey=1', 'spin=1', 'pinterest=1', 'mysession=abc']) {
+      expect(scrubMessage(text), text).toBe(text);
+    }
+  });
+
+  it('finds a sensitive key nested inside a non-sensitive container', () => {
+    expect(scrubMessage('{"profile":{"token":"abc"}}')).toBe('{"profile":{"token":"[REDACTED]"}}');
+  });
+
+  it('replaces container values and Authorization-style Bearer values whole', () => {
+    expect(scrubMessage('{"password":["a","b"]}')).toBe('{"password":[REDACTED]}');
+    expect(scrubMessage('Authorization: Bearer abc')).toBe('Authorization: [REDACTED]');
+  });
+});
+
+describe('firewall sources — browser baseline guard', () => {
+  it('uses no regex lookbehind, which Safari < 16.4 cannot parse (it would kill the worker at load)', () => {
+    const dir = join(__dirname, '../src/firewall');
+    for (const file of readdirSync(dir).filter((name) => name.endsWith('.ts'))) {
+      expect(readFileSync(join(dir, file), 'utf8'), file).not.toMatch(/\(\?<[=!]/);
     }
   });
 });

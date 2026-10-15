@@ -13,6 +13,9 @@
     }
   },
   "files": ["dist", "player.html"],
+  "devDependencies": {
+    "@bugreel/sdk": "workspace:*"
+  },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
     "typecheck": "tsc --noEmit"

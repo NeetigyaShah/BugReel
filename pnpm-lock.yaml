@@ -32,7 +32,11 @@ importers:
 
   demo: {}
 
-  packages/player: {}
+  packages/player:
+    devDependencies:
+      '@bugreel/sdk':
+        specifier: workspace:*
+        version: link:../sdk
 
   packages/sdk: {}
 

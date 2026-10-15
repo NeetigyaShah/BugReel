@@ -181,6 +181,8 @@ export interface BugReelReport {
 export interface BugpackMediaEntry {
   name: string;
   data: Uint8Array;
+  /** RFC 2046 type — informational for submit consumers (e.g. webhook multipart); the archive itself needs only name+data. */
+  mimeType?: string;
 }
 
 export type ToWorkerMessage =

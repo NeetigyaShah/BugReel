@@ -1,6 +1,13 @@
 import { compileMarkdown, compilePrompt } from './worker/compilers';
 import { downloadBytes } from './download';
 import { createReportStore, type ReportStore } from './store';
+import { createAnnotator, type AnnotatorHandle, type AnnotatorOptions } from './annotator';
+import {
+  captureSnapshot,
+  decodeImageBytes,
+  type SnapshotImage,
+  type SnapshotWindow,
+} from './snapshot';
 import { guard, uuid } from './util';
 import type {
   BugReelReport,
@@ -57,6 +64,14 @@ export interface ModalDeps {
   /** Download seam — defaults to a Blob+anchor download. */
   download?(filename: string, bytes: Uint8Array): void;
   /**
+   * T09a seams — snapshot capture / PNG decode / annotator factory. The real
+   * implementations live in ./snapshot and ./annotator (this chunk); tests
+   * inject fakes so no canvas rasterization is needed.
+   */
+  captureSnapshot?(win: ModalWindow): Promise<Uint8Array | undefined>;
+  decodeImage?(bytes: Uint8Array): Promise<SnapshotImage | undefined>;
+  createAnnotator?(opts: AnnotatorOptions): AnnotatorHandle | undefined;
+  /**
    * Mode-2 flag reserved for the webhook ticket (T10): a configured webhook
    * means submit should dispatch rather than only persist locally.
    */
@@ -64,9 +79,14 @@ export interface ModalDeps {
   /**
    * T10 extension seam — replaces the default submit path (IndexedDB save in
    * Mode 1). Awaited; a throw or rejection drops the modal into its error
-   * state and never propagates to the host.
+   * state and never propagates to the host. `ctx.media` carries the T09a
+   * attachments (annotated snapshot); consumers default to `?? []`.
    */
-  onSubmit?(ctx: { report: BugReelReport; answers: ReporterAnswers }): unknown;
+  onSubmit?(ctx: {
+    report: BugReelReport;
+    answers: ReporterAnswers;
+    media?: BugpackMediaEntry[];
+  }): unknown;
   /** Injectable clock for tests. */
   now?(): number;
 }
@@ -96,6 +116,8 @@ const COMPILE_DEBOUNCE_MS = 300;
 const PACK_TIMEOUT_MS = 15_000;
 const STATUS_CLEAR_MS = 4_000;
 const SEVERITY_MARK: Record<string, string> = { critical: '🚨', warning: '⚠️' };
+/** The annotated Snapshot lands in the .bugpack as `media/snapshot-annotated.png`. */
+const SNAPSHOT_MEDIA_NAME = 'snapshot-annotated.png';
 
 /* ------------------------------------------------------------------ */
 /* Style + skeleton — every selector is shadow-scoped; nothing global.  */
@@ -134,6 +156,27 @@ const SKELETON = `<style>
 .br-btn-primary{background:#111827;border-color:#111827;color:#fff}
 .br-btn-primary:hover:not(:disabled){background:#1f2937}
 .br-hidden{display:none!important}
+.br-media{margin-top:14px;border-top:1px solid #e5e7eb;padding-top:10px}
+.br-media-bar{display:flex;align-items:center;gap:8px}
+.br-media-title{font-weight:600;font-size:13px;color:#374151}
+.br-media-btn{margin-left:auto;padding:6px 10px;font-size:13px}
+.br-media-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.br-media-list:empty{margin:0}
+.br-media-item{position:relative;width:120px;border:1px solid #e5e7eb;border-radius:8px;padding:4px;background:#fff}
+.br-media-item img{display:block;width:100%;height:72px;object-fit:cover;border-radius:4px;background:#f3f4f6}
+.br-media-item span{display:block;margin-top:4px;font-size:11px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.br-media-remove{position:absolute;top:-6px;right:-6px;width:18px;height:18px;padding:0;border:1px solid #d1d5db;border-radius:50%;background:#fff;color:#6b7280;font-size:12px;line-height:1;cursor:pointer}
+.br-annotator{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;background:#fff;border-radius:12px;overflow:hidden}
+.br-anno-root{flex:1;display:flex;flex-direction:column;min-height:0}
+.br-anno-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 10px;background:#f9fafb;border-bottom:1px solid #e5e7eb}
+.br-tool{border:1px solid #d1d5db;background:#fff;border-radius:6px;padding:5px 9px;font:inherit;font-size:13px;cursor:pointer;color:#111827}
+.br-tool:hover:not(:disabled){background:#f3f4f6}
+.br-tool:disabled{opacity:.45;cursor:not-allowed}
+.br-tool.br-active{background:#111827;border-color:#111827;color:#fff}
+.br-anno-spacer{flex:1}
+.br-stage{flex:1;min-height:0;position:relative;overflow:auto;background:#f3f4f6}
+.br-stage canvas{display:block;max-width:100%}
+.br-anno-ink{position:absolute;left:0;top:0;max-width:100%;touch-action:none;cursor:crosshair}
 </style>
 <div class="br-backdrop" data-br="backdrop"></div>
 <div class="br-panel" role="dialog" aria-modal="true" aria-label="Report a bug">
@@ -149,6 +192,13 @@ const SKELETON = `<style>
       <label class="br-field"><span class="br-label">What went wrong?</span>
         <textarea class="br-textarea" data-br="wrong" rows="2"></textarea></label>
       <div class="br-preview" data-br="preview"></div>
+      <div class="br-media" data-br="media">
+        <div class="br-media-bar">
+          <span class="br-media-title">Attachments</span>
+          <button class="br-btn br-media-btn" type="button" data-br="annotate">Annotate snapshot</button>
+        </div>
+        <div class="br-media-list" data-br="media-list"></div>
+      </div>
     </div>
   </div>
   <div class="br-status" data-br="status" role="status"></div>
@@ -158,6 +208,7 @@ const SKELETON = `<style>
     <button class="br-btn" type="button" data-br="download" disabled>Download .bugpack</button>
     <button class="br-btn br-btn-primary" type="button" data-br="submit" disabled>Submit report</button>
   </div>
+  <div class="br-annotator br-hidden" data-br="annotator"></div>
 </div>`;
 
 /* ------------------------------------------------------------------ */
@@ -251,6 +302,23 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
   const buttons = (['copy-md', 'copy-prompt', 'download', 'submit'] as const).map(
     (key) => q<{ disabled: boolean; addEventListener?: AnyFn; click?: () => void }>(key),
   );
+
+  /* ------------------------- T09a media ------------------------- */
+  const annotateBtn = q<{ disabled: boolean; addEventListener?: AnyFn }>('annotate');
+  const mediaListEl = q<{
+    replaceChildren(...nodes: unknown[]): void;
+    addEventListener?: AnyFn;
+    removeEventListener?: AnyFn;
+  }>('media-list');
+  const annotatorHost = q<{
+    classList: { toggle(c: string, on: boolean): void };
+    replaceChildren?(...nodes: unknown[]): void;
+    appendChild?(node: unknown): unknown;
+  }>('annotator');
+  let mediaEntries: BugpackMediaEntry[] = [];
+  let annotator: AnnotatorHandle | undefined;
+  let annotating = false;
+  const mediaUrls: string[] = [];
 
   /* ------------------------- state ------------------------- */
   let phase: Phase = deps.report ? 'ready' : 'loading';
@@ -407,6 +475,179 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
     } catch {}
   };
 
+  /* ------------------------- T09a media ------------------------- */
+
+  /** Object URLs minted for thumbnails — revoked on re-render and destroy. */
+  const releaseMediaUrls = (): void => {
+    for (const url of mediaUrls.splice(0)) {
+      try {
+        const U = (win as { URL?: { revokeObjectURL?(u: string): void } }).URL ?? URL;
+        U?.revokeObjectURL?.(url);
+      } catch {}
+    }
+  };
+
+  /** Thumbnail URL for a media entry: blob URL preferred, data URL fallback. */
+  const mediaThumbUrl = (bytes: Uint8Array): string | undefined => {
+    try {
+      const U =
+        (win as { URL?: { createObjectURL?(b: Blob): string } }).URL ??
+        (URL as { createObjectURL?(b: Blob): string });
+      const url = U?.createObjectURL?.(new Blob([bytes as unknown as BlobPart], { type: 'image/png' }));
+      if (url) {
+        mediaUrls.push(url);
+        return url;
+      }
+    } catch {}
+    try {
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+      return `data:image/png;base64,${btoa(bin)}`;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** Render the attachment list — thumbnails plus a per-item remove button. */
+  const renderMedia = (): void => {
+    try {
+      if (!mediaListEl) return;
+      releaseMediaUrls();
+      const kids: unknown[] = [];
+      for (const m of mediaEntries) {
+        const item = h('div', 'br-media-item') as {
+          setAttribute?(n: string, v: string): void;
+          append(...k: unknown[]): void;
+        };
+        item.setAttribute?.('data-br', 'media-item');
+        const url = mediaThumbUrl(m.data);
+        if (url) {
+          const img = createElement('img') as { src?: string; alt?: string };
+          img.src = url;
+          img.alt = m.name;
+          item.append(img);
+        }
+        item.append(h('span', undefined, m.name));
+        const rm = h('button', 'br-media-remove', '×') as {
+          setAttribute?(n: string, v: string): void;
+        };
+        rm.setAttribute?.('type', 'button');
+        rm.setAttribute?.('data-name', m.name);
+        rm.setAttribute?.('aria-label', 'Remove attachment');
+        item.append(rm);
+        kids.push(item);
+      }
+      mediaListEl.replaceChildren(...kids);
+    } catch {}
+  };
+
+  /** Hide and tear down the annotator overlay, if mounted. */
+  const closeAnnotator = (): void => {
+    try {
+      annotator?.destroy();
+    } catch {}
+    annotator = undefined;
+    try {
+      annotatorHost?.classList.toggle('br-hidden', true);
+      annotatorHost?.replaceChildren?.();
+    } catch {}
+  };
+
+  /** Done callback — the annotated PNG becomes the snapshot media entry. */
+  const onAnnotatorDone = (png: Uint8Array | undefined): void => {
+    closeAnnotator();
+    if (!png?.length) {
+      setStatus('Could not read the annotation — nothing attached.', true);
+      return;
+    }
+    mediaEntries = [
+      ...mediaEntries.filter((m) => m.name !== SNAPSHOT_MEDIA_NAME),
+      { name: SNAPSHOT_MEDIA_NAME, mimeType: 'image/png', data: png },
+    ];
+    renderMedia();
+    setStatus('Annotated snapshot attached.');
+  };
+
+  /**
+   * "Annotate snapshot" — capture through the fallback chain, decode, then
+   * mount the annotator over it. Never throws into the host.
+   */
+  const annotateAction = guard(async (): Promise<void> => {
+    if (annotating) return;
+    annotating = true;
+    try {
+      if (annotateBtn) annotateBtn.disabled = true;
+    } catch {}
+    setStatus('Capturing snapshot…');
+    try {
+      const capture =
+        deps.captureSnapshot ??
+        ((w: ModalWindow) => captureSnapshot(w as unknown as SnapshotWindow));
+      const png = await capture(win);
+      if (!png?.length) {
+        setStatus('No snapshot available — capture was cancelled or unsupported.', true);
+        return;
+      }
+      const decode =
+        deps.decodeImage ??
+        ((bytes: Uint8Array) => decodeImageBytes(win as unknown as SnapshotWindow, bytes));
+      const image = await decode(png);
+      if (!image) {
+        setStatus('Snapshot captured but the image could not be decoded.', true);
+        return;
+      }
+      const create = deps.createAnnotator ?? createAnnotator;
+      const handle = create({
+        document: doc,
+        image,
+        onDone: onAnnotatorDone,
+        onCancel: () => closeAnnotator(),
+      });
+      if (!handle?.el) {
+        setStatus('Annotator unavailable on this browser.', true);
+        return;
+      }
+      annotator = handle;
+      try {
+        if (typeof annotatorHost?.replaceChildren === 'function') {
+          annotatorHost.replaceChildren(handle.el);
+        } else {
+          annotatorHost?.appendChild?.(handle.el);
+        }
+        annotatorHost?.classList.toggle('br-hidden', false);
+      } catch {}
+      setStatus('');
+    } catch {
+      setStatus('Snapshot capture failed.', true);
+    } finally {
+      annotating = false;
+      try {
+        if (annotateBtn) annotateBtn.disabled = false;
+      } catch {}
+    }
+  });
+
+  /** Remove-button delegation for the media list. */
+  const removeMediaClick = guard((e: { target?: { closest?(s: string): unknown } }): void => {
+    const btn = e?.target?.closest?.('button[data-name]') as
+      | { getAttribute?(n: string): string | null }
+      | null
+      | undefined;
+    const name = btn?.getAttribute?.('data-name') ?? undefined;
+    if (!name) return;
+    mediaEntries = mediaEntries.filter((m) => m.name !== name);
+    renderMedia();
+    setStatus('Attachment removed.');
+  });
+
+  /** The report with attachment names folded into its media manifest. */
+  const reportWithMedia = (r: BugReelReport): BugReelReport =>
+    mediaEntries.length
+      ? { ...r, media: [...new Set([...(r.media ?? []), ...mediaEntries.map((m) => m.name)])] }
+      : r;
+
   /**
    * Fire a worker request through the injected channel — never throws. Meta is
    * stamped only when a `meta` dep was provided; otherwise the worker reuses
@@ -479,7 +720,11 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
 
   const downloadAction = guard((): void => {
     if (pendingPack) return;
-    const requestId = sendWorker({ type: 'bugreel:pack', answers: answers() });
+    const requestId = sendWorker({
+      type: 'bugreel:pack',
+      answers: answers(),
+      media: mediaEntries.length ? mediaEntries.slice() : undefined,
+    });
     if (!requestId) {
       setStatus('Report pipeline unavailable — try the copy buttons instead.', true);
       return;
@@ -498,7 +743,12 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
     setPhase('submitting');
     setStatus('Submitting…');
     try {
-      const ctx = { report: r, answers: answers() };
+      // T09a: attachments ride `ctx.media`; the report's media manifest names them.
+      const ctx = {
+        report: reportWithMedia(r),
+        answers: answers(),
+        media: mediaEntries.length ? mediaEntries.slice() : undefined,
+      };
       // T10 seam: a configured webhook injects onSubmit (dispatch); the
       // Mode-1 default persists the report to IndexedDB.
       const result = deps.onSubmit ? await deps.onSubmit(ctx) : await store?.saveReport(r);
@@ -532,6 +782,7 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
       el.style.display = 'none';
     } catch {}
     clearTimeout(compileTimer);
+    closeAnnotator(); // T09a — a hidden overlay must not outlive its modal
   };
 
   const onReport = guard((detail: unknown): void => {
@@ -600,6 +851,8 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
   on(q('copy-prompt') as EventTargetLike | undefined, 'click', () => copyAction('prompt'));
   on(q('download') as EventTargetLike | undefined, 'click', downloadAction);
   on(q('submit') as EventTargetLike | undefined, 'click', submitAction);
+  on(annotateBtn as EventTargetLike | undefined, 'click', annotateAction);
+  on(mediaListEl as EventTargetLike | undefined, 'click', removeMediaClick);
 
   try {
     (doc.body ?? (doc.documentElement as { appendChild?(e: unknown): unknown } | undefined))
@@ -630,6 +883,8 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
           cleanup();
         } catch {}
       }
+      closeAnnotator(); // T09a
+      releaseMediaUrls(); // T09a
       try {
         (el as { remove?: () => void }).remove?.();
       } catch {}

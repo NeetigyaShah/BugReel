@@ -352,4 +352,109 @@ describe('mountModal', () => {
   it('returns undefined where there is no usable document', () => {
     expect(mountModal({ window: { addEventListener() {}, removeEventListener() {} } })).toBeUndefined();
   });
+
+  /* ------------------------- T09a media ------------------------- */
+
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d]);
+
+  const mediaDeps = (extra: Partial<ModalDeps> = {}) => {
+    let onDone: ((p: Uint8Array | undefined) => void) | undefined;
+    let onCancel: (() => void) | undefined;
+    const annoEl = document.createElement('div');
+    const annotator = {
+      el: annoEl,
+      setTool: vi.fn(),
+      undo: vi.fn(),
+      canUndo: () => false,
+      toPng: () => png,
+      destroy: vi.fn(),
+    };
+    const deps: Partial<ModalDeps> = {
+      captureSnapshot: vi.fn(async () => png),
+      decodeImage: vi.fn(async () => ({ width: 8, height: 8, source: {} })),
+      createAnnotator: vi.fn((opts) => {
+        onDone = opts.onDone;
+        onCancel = opts.onCancel;
+        return annotator;
+      }),
+      ...extra,
+    };
+    return { deps, annotator, annoEl, done: (p?: Uint8Array) => onDone?.(p), cancel: () => onCancel?.() };
+  };
+
+  it('captures a snapshot, mounts the annotator, and attaches the PNG to pack + submit', async () => {
+    const onSubmit = vi.fn();
+    const kit = mediaDeps({ onSubmit });
+    const { deps, sent } = setup({ report: report(), ...kit.deps });
+    const h = mount(deps);
+
+    br<HTMLButtonElement>(h, 'annotate').click();
+    await vi.waitFor(() => expect(kit.deps.captureSnapshot).toHaveBeenCalled());
+    await vi.waitFor(() => expect(kit.deps.createAnnotator).toHaveBeenCalled());
+    const host = br<HTMLElement>(h, 'annotator');
+    expect(host.classList.contains('br-hidden')).toBe(false);
+    expect(host.contains(kit.annoEl)).toBe(true);
+
+    kit.done(png);
+    expect(kit.annotator.destroy).toHaveBeenCalled();
+    expect(host.classList.contains('br-hidden')).toBe(true);
+    expect(text(h, 'media-list')).toContain('snapshot-annotated.png');
+    expect(text(h, 'status')).toContain('attached');
+
+    // The pack request carries the media entry.
+    fillBoth(h);
+    br<HTMLButtonElement>(h, 'download').click();
+    const pack = sent.find((m) => m.type === 'bugreel:pack');
+    expect(pack?.media?.map((m) => m.name)).toEqual(['snapshot-annotated.png']);
+    expect(pack?.media?.[0]?.mimeType).toBe('image/png');
+    expect(pack?.media?.[0]?.data).toBe(png);
+
+    // The submit ctx carries media and the report manifest names it.
+    br<HTMLButtonElement>(h, 'submit').click();
+    await vi.waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const ctx = onSubmit.mock.calls[0]![0] as {
+      report: BugReelReport;
+      media?: { name: string; data: Uint8Array }[];
+    };
+    expect(ctx.media?.[0]?.name).toBe('snapshot-annotated.png');
+    expect(ctx.report.media).toContain('snapshot-annotated.png');
+  });
+
+  it('reports an error when every snapshot path comes back empty', async () => {
+    const kit = mediaDeps({ captureSnapshot: vi.fn(async () => undefined) });
+    const { deps } = setup({ report: report(), ...kit.deps });
+    const h = mount(deps);
+    br<HTMLButtonElement>(h, 'annotate').click();
+    await vi.waitFor(() => expect(text(h, 'status')).toContain('No snapshot'));
+    expect(kit.deps.createAnnotator).not.toHaveBeenCalled();
+  });
+
+  it('attaches nothing when the annotator is cancelled', async () => {
+    const kit = mediaDeps();
+    const { deps } = setup({ report: report(), ...kit.deps });
+    const h = mount(deps);
+    br<HTMLButtonElement>(h, 'annotate').click();
+    await vi.waitFor(() => expect(kit.deps.createAnnotator).toHaveBeenCalled());
+    kit.cancel();
+    expect(kit.annotator.destroy).toHaveBeenCalled();
+    expect(text(h, 'media-list')).toBe('');
+    expect(br<HTMLElement>(h, 'annotator').classList.contains('br-hidden')).toBe(true);
+  });
+
+  it('removes an attachment via its × button and drops it from the pack', async () => {
+    const kit = mediaDeps();
+    const { deps, sent } = setup({ report: report(), ...kit.deps });
+    const h = mount(deps);
+    br<HTMLButtonElement>(h, 'annotate').click();
+    await vi.waitFor(() => expect(kit.deps.createAnnotator).toHaveBeenCalled());
+    kit.done(png);
+    const remove = h.el.shadowRoot!.querySelector('.br-media-remove') as HTMLButtonElement;
+    expect(remove).toBeTruthy();
+    remove.click();
+    expect(text(h, 'media-list')).not.toContain('snapshot-annotated.png');
+    fillBoth(h);
+    br<HTMLButtonElement>(h, 'download').click();
+    const pack = sent.find((m) => m.type === 'bugreel:pack');
+    expect(pack?.media).toBeUndefined();
+  });
 });

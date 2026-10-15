@@ -142,6 +142,36 @@ describe('worker runtime', () => {
     expect(out[0]).toMatchObject({ type: 'bugreel:error', requestId: 'r9' });
   });
 
+  it('bugreel:pack returns a real .bugpack whose reply can never re-enter as work', () => {
+    const rt = createWorkerRuntime({ scrubEvent });
+    rt.handleMessage({ type: 'bugreel:event', event: click('p1', T() - 100) });
+    const out = rt.handleMessage({
+      type: 'bugreel:pack',
+      requestId: 'bp1',
+      meta,
+      media: [{ name: 'shot.png', data: new Uint8Array([1, 2]) }],
+    });
+    const reply = out[0];
+    expect(reply?.type).toBe('bugreel:bugpack');
+    if (reply?.type !== 'bugreel:bugpack') return;
+    // ZIP local-file-header signature 'PK\x03\x04'
+    expect(Array.from(reply.bugpack.slice(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    // The reply must never be mistaken for inbound work (echo-loop guard)
+    expect(isToWorkerMessage(reply)).toBe(false);
+    // report.json inside the archive names the media exactly as packed
+    const jsonView = new DataView(reply.bugpack.buffer, reply.bugpack.byteOffset);
+    const jsonSize = jsonView.getUint32(18, true); // LFH size field
+    const reportJson = JSON.parse(
+      new TextDecoder().decode(reply.bugpack.slice(30 + 11, 30 + 11 + jsonSize)),
+    ) as { media?: string[] };
+    expect(reportJson.media).toEqual(['shot.png']);
+    // media filenames are recorded on the compiled report contract
+    const out2 = rt.handleMessage(compile());
+    if (out2[0]?.type === 'bugreel:report') {
+      expect(out2[0].report.media).toBeUndefined(); // compile alone carries no media
+    }
+  });
+
   it('compiled outputs are built only from post-Firewall events', () => {
     const rt = createWorkerRuntime({ scrubEvent });
     const secret = 'sk_live_4eC39HqLyjWDarjtT1zdp7dc';

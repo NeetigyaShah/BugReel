@@ -85,15 +85,19 @@ export const scriptTagWorker = (
       if (port) port.reply = null;
     },
   };
+  const bind = (): void => {
+    try {
+      const port = portOf();
+      if (!port) return;
+      port.reply = (data) => worker.onmessage?.({ data });
+      worker.onmessage?.({ data: { type: 'bugreel:worker-ready' } });
+    } catch {}
+  };
   try {
-    injectScript(win.document, url, () => {
-      try {
-        const port = portOf();
-        if (!port) return;
-        port.reply = (data) => worker.onmessage?.({ data });
-        worker.onmessage?.({ data: { type: 'bugreel:worker-ready' } });
-      } catch {}
-    });
+    // A published port means the worker script is live — adopting it avoids a
+    // second <script> that would overwrite the shared port and drop replies.
+    if (portOf()) bind();
+    else injectScript(win.document, url, bind);
   } catch {}
   return worker;
 };

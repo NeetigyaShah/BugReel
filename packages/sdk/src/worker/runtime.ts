@@ -1,4 +1,5 @@
 import { RingBuffer } from './ringBuffer';
+import { packBugpack, selectMediaEntries } from './bugpack';
 import { compileReport, runDetectors } from './pipeline';
 import type {
   BugDetector,
@@ -15,6 +16,7 @@ const INBOUND_TYPES: ReadonlySet<string> = new Set<ToWorkerMessage['type']>([
   'bugreel:events',
   'bugreel:annotate',
   'bugreel:compile',
+  'bugreel:pack',
 ]);
 
 /**
@@ -83,23 +85,42 @@ export function createWorkerRuntime(options: WorkerRuntimeOptions = {}) {
           if (patched) collect(runDetectors(detectors, patched, buffer.window()));
           return [];
         }
-        case 'bugreel:compile': {
+        case 'bugreel:compile':
+        case 'bugreel:pack': {
           // One clock for the whole report: the host stamps meta.capturedAt at
           // open time; the event window and the findings cutoff share it.
           const now = Number.isFinite(message.meta?.capturedAt)
             ? message.meta.capturedAt
             : Date.now();
           const liveFindings = findings.filter((f) => f.timestamp >= now - windowMs);
+          // The manifest inside report.json must name exactly what lands in
+          // the archive — sanitize + lite-filter before compiling.
+          const mediaEntries =
+            message.type === 'bugreel:pack'
+              ? selectMediaEntries(
+                  Object.fromEntries((message.media ?? []).map((m) => [m.name, m.data])),
+                  { lite: message.lite },
+                )
+              : [];
+          const report = compileReport({
+            events: buffer.window(now),
+            findings: liveFindings,
+            meta: message.meta,
+            answers: message.answers,
+            media: mediaEntries.map((e) => e.name),
+          });
+          if (message.type === 'bugreel:compile') {
+            return [{ type: 'bugreel:report', requestId: message.requestId, report }];
+          }
           return [
             {
-              type: 'bugreel:report',
+              type: 'bugreel:bugpack',
               requestId: message.requestId,
-              report: compileReport({
-                events: buffer.window(now),
-                findings: liveFindings,
-                meta: message.meta,
-                answers: message.answers,
-              }),
+              bugpack: packBugpack(
+                report,
+                Object.fromEntries(mediaEntries.map((e) => [e.name, e.data])),
+                { lite: message.lite },
+              ),
             },
           ];
         }

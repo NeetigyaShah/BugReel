@@ -11,8 +11,12 @@
     <input id="field" />
     <script>
       window.__report = undefined;
+      window.__dbg = [];
+      window.__bugreelDbg = (m) => window.__dbg.push(String(m));
       window.__opened = false;
+      document.addEventListener('bugreel:error', (e) => window.__dbg.push('ERR ' + JSON.stringify(e.detail)));
       document.addEventListener('bugreel:report', (e) => {
+        window.__dbg.push('REPORT got ' + (e.detail?.events?.length ?? -1) + ' events');
         window.__report = e.detail;
       });
       document.addEventListener('bugreel:open', () => {

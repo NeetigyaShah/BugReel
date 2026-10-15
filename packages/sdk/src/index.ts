@@ -8,6 +8,7 @@ import type { BugReelConfig, BugReelHandle } from './app';
 import type { WorkerLike } from './transport';
 
 export * from './types';
+export { packBugpack } from './worker/bugpack';
 export { version };
 export type { BugReelConfig, BugReelHandle };
 

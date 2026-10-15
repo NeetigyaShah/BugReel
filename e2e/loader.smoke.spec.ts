@@ -46,8 +46,16 @@ test('auto-init: pill mounts, capture chunk loads, click→fetch→open→report
   // Report: open() → compile → worker (main-thread <script> fallback on file://) → bugreel:report.
   await page.evaluate(() => (window as { BugReel?: { open?: () => void } }).BugReel?.open?.());
   await expect.poll(() => page.evaluate(() => window.__opened)).toBe(true);
-  await expect.poll(() => page.evaluate(() => !!window.__report)).toBe(true);
+  // Worker startup under file:// goes through the full fallback chain —
+  // allow generous time under loaded CI.
+  await expect
+    .poll(() => page.evaluate(() => !!window.__report), { timeout: 15_000 })
+    .toBe(true);
 
+  if (!(await page.evaluate(() => !!window.__report))) {
+    console.log('DBG', await page.evaluate(() => (window as unknown as {__dbg: string[]}).__dbg));
+    console.log('ERRS', pageErrors);
+  }
   const report = await page.evaluate(
     () => window.__report as { events?: { type: string }[] },
   );

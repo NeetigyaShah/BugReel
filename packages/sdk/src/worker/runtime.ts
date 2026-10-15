@@ -6,6 +6,7 @@ import type {
   DiagnosticFinding,
   FromWorkerMessage,
   RawBugReelEvent,
+  ReportMeta,
   ToWorkerMessage,
 } from '../types';
 
@@ -49,6 +50,9 @@ export function createWorkerRuntime(options: WorkerRuntimeOptions = {}) {
   const scrubEvent = options.scrubEvent ?? ((event: RawBugReelEvent) => event);
   const findings: DiagnosticFinding[] = [];
   const seenFindings = new Set<string>();
+  // The last full report meta — meta-less compile/pack messages (the modal
+  // sends these to keep the loader chunk lean) reuse the opener's meta.
+  let lastMeta: ReportMeta | undefined;
 
   const collect = (emitted: DiagnosticFinding[]): void => {
     for (const finding of emitted) {
@@ -87,11 +91,20 @@ export function createWorkerRuntime(options: WorkerRuntimeOptions = {}) {
         }
         case 'bugreel:compile':
         case 'bugreel:pack': {
+          const meta = message.meta ?? lastMeta;
+          if (message.meta) lastMeta = message.meta;
+          if (!meta) {
+            return [
+              {
+                type: 'bugreel:error',
+                requestId: requestIdOf(message),
+                message: 'report meta required',
+              },
+            ];
+          }
           // One clock for the whole report: the host stamps meta.capturedAt at
           // open time; the event window and the findings cutoff share it.
-          const now = Number.isFinite(message.meta?.capturedAt)
-            ? message.meta.capturedAt
-            : Date.now();
+          const now = Number.isFinite(meta.capturedAt) ? meta.capturedAt : Date.now();
           const liveFindings = findings.filter((f) => f.timestamp >= now - windowMs);
           // The manifest inside report.json must name exactly what lands in
           // the archive — sanitize + lite-filter before compiling.
@@ -105,7 +118,7 @@ export function createWorkerRuntime(options: WorkerRuntimeOptions = {}) {
           const report = compileReport({
             events: buffer.window(now),
             findings: liveFindings,
-            meta: message.meta,
+            meta,
             answers: message.answers,
             media: mediaEntries.map((e) => e.name),
           });

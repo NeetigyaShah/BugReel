@@ -205,3 +205,33 @@ describe('worker runtime', () => {
     expect(report.outputs.curl).toContain('[REDACTED]');
   });
 });
+
+describe('meta-less compile/pack (modal path)', () => {
+  it('falls back to the last full meta for a meta-less compile', () => {
+    const rt = createWorkerRuntime();
+    rt.handleMessage({ type: 'bugreel:event', event: click('m1', T() - 100) });
+    rt.handleMessage(compile('r1')); // stamps meta
+    const out = rt.handleMessage({ type: 'bugreel:compile', requestId: 'r2', answers: { tryingToDo: 'pay' } });
+    expect(out[0]?.type).toBe('bugreel:report');
+    if (out[0]?.type === 'bugreel:report') {
+      expect(out[0].report.meta.sessionId).toBe('sess-1');
+      expect(out[0].report.reporterAnswers.tryingToDo).toBe('pay');
+    }
+  });
+
+  it('errors when no meta has ever been seen instead of crashing', () => {
+    const rt = createWorkerRuntime();
+    const out = rt.handleMessage({ type: 'bugreel:compile', requestId: 'r9' });
+    expect(out[0]).toMatchObject({ type: 'bugreel:error', requestId: 'r9' });
+  });
+
+  it('a meta-less pack packs with the last meta too', () => {
+    const rt = createWorkerRuntime();
+    rt.handleMessage(compile('r1'));
+    const out = rt.handleMessage({ type: 'bugreel:pack', requestId: 'p2' });
+    expect(out[0]?.type).toBe('bugreel:bugpack');
+    if (out[0]?.type === 'bugreel:bugpack') {
+      expect(Array.from(out[0].bugpack.slice(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    }
+  });
+});

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- auto-init via data-* attributes -->
+    <script src="../../packages/sdk/dist/loader.global.js" data-bugreel-pill="true"></script>
+    <style>
+      /* Hostile host-page CSS — must NOT leak into the modal's Shadow DOM. */
+      body {
+        font-family: cursive !important;
+        color: rgb(255, 0, 0) !important;
+      }
+      button {
+        background: rgb(255, 0, 0) !important;
+        color: rgb(255, 255, 0) !important;
+        border-radius: 0 !important;
+      }
+      textarea {
+        border: 12px solid rgb(0, 255, 0) !important;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>modal fixture</h1>
+    <button id="btn">do thing</button>
+    <input id="field" />
+    <script>
+      window.__report = undefined;
+      document.addEventListener('bugreel:report', (e) => {
+        window.__report = e.detail;
+      });
+      document.getElementById('btn').addEventListener('click', () => {
+        document.body.insertAdjacentHTML('beforeend', '<div id="out">done</div>');
+        fetch('/api/never-here').catch(() => {});
+        console.error('fixture-error');
+      });
+    </script>
+  </body>
+</html>

@@ -32,8 +32,25 @@ export class FakeWindow {
     activeElement: null as unknown,
     dispatched: [] as { type: string; detail?: unknown }[],
     created: [] as FakeEl[],
+    listeners: [] as { type: string; fn: (e: never) => void }[],
+    addEventListener(type: string, fn: (e: never) => void) {
+      this.listeners.push({ type, fn });
+    },
+    removeEventListener(type: string, fn: (e: never) => void) {
+      this.listeners = this.listeners.filter((l) => l.type !== type || l.fn !== fn);
+    },
+    /** Deliver an event to addEventListener subscribers (no dispatch record). */
+    fire(type: string, e: unknown) {
+      for (const l of [...this.listeners]) if (l.type === type) l.fn(e as never);
+    },
+    /** Elements previously produced by createElement — enough for script lookup. */
+    getElementsByTagName(tag: string) {
+      return this.created.filter((e) => e.tag === tag.toUpperCase());
+    },
     dispatchEvent(e: unknown) {
-      this.dispatched.push(e as { type: string; detail?: unknown });
+      const evt = e as { type: string; detail?: unknown };
+      this.dispatched.push(evt);
+      for (const l of [...this.listeners]) if (l.type === evt.type) l.fn(e as never);
       return true;
     },
     createElement(tag: string): FakeEl {

@@ -13,6 +13,7 @@ import { scheduleIdle, uuid } from './util';
 export const version = '0.1.0';
 
 export interface BugReelConfig {
+  /** Mode-2 webhook target — accepted now so installs are forward-compatible; dispatch lands with the webhook ticket (#12). */
   webhookUrl?: string;
   /** Explicit worker script URL — overrides every worker resolution path. */
   workerUrl?: string;
@@ -166,6 +167,7 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
   // module synchronously; CDN injects sibling `capture.global.js` as a
   // classic <script>, allowed by the same script-src that ran the loader.
   let capture: CaptureHandle | undefined;
+  let destroyed = false;
   try {
     const deps: CaptureDeps = {
       window: win,
@@ -180,6 +182,9 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
       capture = env.installCapture(deps);
     } else {
       injectScript(doc, siblingUrl('capture.global.js'), () => {
+        // The script can land after destroy() — installing then would patch
+        // fetch/XHR/console with no teardown path left to undo it.
+        if (destroyed) return;
         try {
           capture = (
             globalThis as {
@@ -207,15 +212,12 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
   const handle: BugReelHandle = {
     open,
     destroy() {
-      try {
-        sensor.destroy();
-      } catch {}
-      try {
-        capture?.destroy();
-      } catch {}
-      try {
-        transport.destroy();
-      } catch {}
+      destroyed = true;
+      for (const part of [sensor, capture, transport]) {
+        try {
+          part?.destroy();
+        } catch {}
+      }
       try {
         win.removeEventListener('keydown', onKeydown as (e: never) => void);
       } catch {}

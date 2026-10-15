@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PORT_KEY, type MainThreadPort } from '../src/port';
 import { createTransport, scriptTagWorker } from '../src/transport';
 import { idleWorker } from '../src/localWorker';
 import { createWorkerRuntime } from '../src/worker/runtime';
@@ -100,6 +101,8 @@ describe('worker bootstrap', () => {
 
   it('falls back to a same-origin <script> bridge when workers are blocked', async () => {
     const win = new FakeWindow();
+    const hostOnMessage = vi.fn();
+    win.onmessage = hostOnMessage;
     const onMessage = vi.fn();
     const t = createTransport({
       makeWorker: () => {
@@ -121,17 +124,76 @@ describe('worker bootstrap', () => {
     // The sibling worker source is injected as a classic <script>.
     const script = win.document.created.find((e) => e.tag === 'SCRIPT');
     expect(script?.src).toBe('https://cdn.test/worker.global.js');
-    // Simulate worker.global.js evaluating: it assigns self.onmessage and
-    // posts readiness through window.postMessage (a window 'message' event).
+
+    // Simulate worker.global.js evaluating: it publishes a private port...
     const inbox: unknown[] = [];
-    win.onmessage = (e) => {
-      inbox.push(e.data);
+    const port: MainThreadPort = {
+      reply: null,
+      receive: (data) => {
+        inbox.push(data);
+      },
     };
-    win.fire('message', { data: { type: 'bugreel:worker-ready' } });
+    (win as unknown as Record<string, unknown>)[PORT_KEY] = port;
+    // ...and the transport announces readiness once the script has loaded.
+    (script as { onload?: (() => void) | null }).onload?.();
     expect(inbox.map((m) => (m as ToWorkerMessage).type)).toEqual(['bugreel:event']);
-    // Worker→transport replies arrive as window 'message' events too.
-    win.fire('message', { data: { type: 'bugreel:report', report: { ok: true } } });
+
+    // Worker -> transport replies travel through the port, not window messages.
+    port.reply?.({ type: 'bugreel:report', report: { ok: true } });
     expect(onMessage).toHaveBeenCalledWith({ type: 'bugreel:report', report: { ok: true } });
+
+    // The host page's own message handler is never touched or invoked.
+    expect(win.onmessage).toBe(hostOnMessage);
+    expect(hostOnMessage).not.toHaveBeenCalled();
+  });
+
+  it('abandons a worker that never reports ready and falls back', async () => {
+    vi.useFakeTimers();
+    try {
+      const terminate = vi.fn();
+      const stuck = { onmessage: null, postMessage: vi.fn(), terminate };
+      const local = fakeWorker();
+      const t = createTransport({
+        makeWorker: () => stuck,
+        fallback: () => local,
+        scheduleIdle: syncIdle,
+        autoStart: false,
+      });
+      t.send(eventMsg('pre'));
+      t.start();
+      await Promise.resolve();
+      expect(stuck.postMessage).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(4_001);
+      expect(terminate).toHaveBeenCalledTimes(1);
+      local.ready();
+      expect(local.posted.map((m) => m.type)).toEqual(['bugreel:event']);
+      t.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not fall back when the worker reports ready in time', async () => {
+    vi.useFakeTimers();
+    try {
+      const worker = fakeWorker();
+      const fallback = vi.fn(() => fakeWorker());
+      const t = createTransport({
+        makeWorker: () => worker,
+        fallback,
+        scheduleIdle: syncIdle,
+        autoStart: false,
+      });
+      t.start();
+      await Promise.resolve();
+      worker.ready();
+      vi.advanceTimersByTime(10_000);
+      expect(fallback).not.toHaveBeenCalled();
+      t.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('runs the injected runtime on the main thread in idle slices as the last resort', async () => {

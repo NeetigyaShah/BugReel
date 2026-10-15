@@ -1,8 +1,8 @@
 import type { BugDetector, ClickEvent } from '../../types';
 import { targetLabel } from './utils';
 
-/** Frozen detection window: a burst is clicks on one element inside ~800ms. */
-export const RAGE_CLICK_WINDOW_MS = 800;
+/** Frozen detection window: a burst is clicks on one element inside one second (GLOSSARY). */
+export const RAGE_CLICK_WINDOW_MS = 1_000;
 /** Minimum clicks in the window that count as a Rage Click (GLOSSARY: "three or more"). */
 export const RAGE_CLICK_MIN_CLICKS = 3;
 

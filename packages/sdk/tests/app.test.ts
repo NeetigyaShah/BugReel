@@ -135,6 +135,21 @@ describe('startBugReel wiring', () => {
     handle.destroy();
   });
 
+  it('does not install the capture chunk if destroy() ran before its script loaded', () => {
+    const installCapture = vi.fn((_deps: unknown) => ({ destroy: vi.fn() }));
+    (globalThis as { BugReelCapture?: unknown }).BugReelCapture = { installCapture };
+    try {
+      const { env } = makeEnv();
+      const handle = startBugReel({}, { ...env, scriptUrl: 'https://cdn.test/loader.global.js' });
+      const script = win.document.created.find((e) => e.tag === 'SCRIPT');
+      handle.destroy();
+      (script as { onload?: (() => void) | null }).onload?.();
+      expect(installCapture).not.toHaveBeenCalled();
+    } finally {
+      delete (globalThis as { BugReelCapture?: unknown }).BugReelCapture;
+    }
+  });
+
   it('hands the pill policy and open flow to the lazy capture chunk', () => {
     const installCapture = vi.fn((_deps: unknown) => ({ destroy: vi.fn() }));
     const { env } = makeEnv();

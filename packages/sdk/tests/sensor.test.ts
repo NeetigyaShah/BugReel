@@ -214,6 +214,20 @@ describe('error-UI observation window (armed by bridged network events)', () => 
     expect(sink.annotations).toEqual([{ id: net.id, patch: { errorUiRendered: false } }]);
   });
 
+  it('also watches requests that never got a response (CORS / network failure)', () => {
+    const { sensor, sink } = makeSensor();
+    sensor.bridge.send({
+      id: 'net-cors',
+      at: time,
+      type: 'fetch',
+      method: 'POST',
+      url: '/api',
+      corsBlocked: true,
+    } as NetworkEvent);
+    vi.advanceTimersByTime(ERROR_UI_WATCH_MS + 1);
+    expect(sink.annotations).toEqual([{ id: 'net-cors', patch: { errorUiRendered: false } }]);
+  });
+
   it('does not watch successful responses', () => {
     const { sensor, sink } = makeSensor();
     sensor.bridge.send({

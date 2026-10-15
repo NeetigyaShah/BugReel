@@ -10,6 +10,17 @@ export interface HotkeySpec {
 
 export const DEFAULT_HOTKEY = 'ctrl+shift+b';
 
+const MODIFIER_ALIASES: Record<string, 'ctrl' | 'meta' | 'alt' | 'shift' | undefined> = {
+  ctrl: 'ctrl',
+  control: 'ctrl',
+  meta: 'meta',
+  cmd: 'meta',
+  command: 'meta',
+  alt: 'alt',
+  option: 'alt',
+  shift: 'shift',
+};
+
 /**
  * `'ctrl+shift+b'` / `'cmd+shift+b'` / `'alt+b'` → spec. Modifier tokens
  * (including macOS `cmd`/`option`/`control` aliases) are order-free; exactly
@@ -20,10 +31,8 @@ export function parseHotkey(spec: string = DEFAULT_HOTKEY): HotkeySpec | undefin
   const out: HotkeySpec = { key: '', ctrl: false, meta: false, shift: false, alt: false };
   for (const token of spec.toLowerCase().split('+')) {
     const t = token.trim();
-    if (t === 'ctrl' || t === 'control') out.ctrl = true;
-    else if (t === 'meta' || t === 'cmd' || t === 'command') out.meta = true;
-    else if (t === 'alt' || t === 'option') out.alt = true;
-    else if (t === 'shift') out.shift = true;
+    const modifier = MODIFIER_ALIASES[t];
+    if (modifier) out[modifier] = true;
     else if (!t) continue;
     else if (out.key) return undefined; // second non-modifier token
     else out.key = t;
@@ -33,7 +42,7 @@ export function parseHotkey(spec: string = DEFAULT_HOTKEY): HotkeySpec | undefin
 
 /** Config override, falling back to `Ctrl+Shift+B` when absent or invalid. */
 export const resolveHotkey = (configured: string | undefined): HotkeySpec =>
-  parseHotkey(configured) || (parseHotkey(DEFAULT_HOTKEY) as HotkeySpec);
+  parseHotkey(configured) || (parseHotkey() as HotkeySpec);
 
 export interface HotkeyEventLike {
   key?: string;
@@ -58,22 +67,15 @@ export function hotkeyMatches(e: HotkeyEventLike, spec: HotkeySpec): boolean {
   );
 }
 
-/** The editable-focus guard (ADR-0007): never hijack typing contexts. */
+/**
+ * The editable-focus guard (ADR-0007): never hijack typing contexts.
+ * `isContentEditable` already accounts for inherited `contenteditable`.
+ */
 export function isEditableTarget(el: unknown): boolean {
-  const e = el as
-    | { tagName?: unknown; isContentEditable?: unknown; closest?: (sel: string) => unknown }
-    | undefined;
+  const e = el as { tagName?: unknown; isContentEditable?: unknown } | undefined;
   if (!e || typeof e !== 'object') return false;
   const tag = typeof e.tagName === 'string' ? e.tagName.toLowerCase() : '';
-  if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
-  try {
-    return !!(
-      e.isContentEditable ||
-      (typeof e.closest === 'function' && e.closest('[contenteditable="true"]'))
-    );
-  } catch {
-    return false;
-  }
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || !!e.isContentEditable;
 }
 
 /**

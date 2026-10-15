@@ -285,13 +285,15 @@ describe('teardown', () => {
     win.fetch = origFetch;
     win.XMLHttpRequest = FakeXHR;
     const origError = win.console.error;
+    const origSend = FakeXHR.prototype.send;
     const { capture } = makeCapture({ shake: true, onShake: () => {} });
     expect(win.fetch).not.toBe(origFetch);
     expect(win.console.error).not.toBe(origError);
-    expect(FakeXHR.prototype.send).not.toBeUndefined();
+    expect(FakeXHR.prototype.send).not.toBe(origSend);
     capture.destroy();
     expect(win.fetch).toBe(origFetch);
     expect(win.console.error).toBe(origError);
+    expect(FakeXHR.prototype.send).toBe(origSend);
     expect(win.listeners).toHaveLength(0);
   });
 });

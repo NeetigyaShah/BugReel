@@ -1,7 +1,10 @@
+import { PORT_KEY, type MainThreadPort } from './port';
 import { scheduleIdle } from './util';
 import type { FromWorkerMessage, ToWorkerMessage } from './types';
 
 const DEFAULT_QUEUE_LIMIT = 500;
+/** A constructed worker that never reports ready (async CSP kill, script error) is abandoned. */
+const READY_TIMEOUT_MS = 4_000;
 
 /** The slice of Worker the transport needs — a real Worker or a local stand-in. */
 export interface WorkerLike {
@@ -57,45 +60,40 @@ const defaultStartWorker = (url: string | URL): WorkerLike =>
  * Runs `worker.global.js` on the main thread as a plain `<script>` — the
  * strict-CSP fallback. Classic scripts ride the same `script-src` rule that
  * loaded the SDK itself, so this survives CSPs that block `blob:` workers.
- * `self` resolves to window: its `self.postMessage` emits window 'message'
- * events (worker → us), and `self.onmessage` receives our posts (us → worker).
+ * The script publishes a private port on `globalThis` (see `port.ts`); the
+ * host page's `window.onmessage` and message listeners are never touched.
  */
 export const scriptTagWorker = (
-  win: {
-    document?: InjectableDocument | null;
-    onmessage?: ((e: { data: unknown }) => void) | null;
-    addEventListener(type: string, fn: (e: never) => void): void;
-    removeEventListener(type: string, fn: (e: never) => void): void;
-  },
+  win: { document?: InjectableDocument | null },
   url: string | undefined,
   idle: (cb: () => void) => void = scheduleIdle,
 ): WorkerLike => {
-  const prevOnMessage = win.onmessage;
+  const portOf = (): MainThreadPort | undefined =>
+    (win as unknown as Record<string, MainThreadPort | undefined>)[PORT_KEY];
   const worker: WorkerLike = {
     onmessage: null,
     // Inbound work is sliced into idle callbacks so capture never blocks.
     postMessage(m) {
       idle(() => {
         try {
-          win.onmessage?.({ data: m });
+          portOf()?.receive(m);
         } catch {}
       });
     },
     terminate() {
-      try {
-        win.removeEventListener('message', onMessageEvent);
-        win.onmessage = prevOnMessage ?? null;
-      } catch {}
+      const port = portOf();
+      if (port) port.reply = null;
     },
   };
-  const onMessageEvent = (e: { data?: unknown }): void => {
-    try {
-      worker.onmessage?.({ data: e?.data });
-    } catch {}
-  };
   try {
-    win.addEventListener('message', onMessageEvent);
-    injectScript(win.document, url);
+    injectScript(win.document, url, () => {
+      try {
+        const port = portOf();
+        if (!port) return;
+        port.reply = (data) => worker.onmessage?.({ data });
+        worker.onmessage?.({ data: { type: 'bugreel:worker-ready' } });
+      } catch {}
+    });
   } catch {}
   return worker;
 };
@@ -147,6 +145,7 @@ export function createTransport(deps: TransportDeps = {}): Transport {
   let ready = false;
   let started = false;
   let dead = false;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
 
   const post = (m: ToWorkerMessage): void => {
     try {
@@ -160,23 +159,20 @@ export function createTransport(deps: TransportDeps = {}): Transport {
     if (!message) return;
     if (message.type === 'bugreel:worker-ready') {
       ready = true;
+      clearTimeout(watchdog);
       for (const m of queue.splice(0)) post(m);
       return;
     }
-    try {
-      onMessage(message);
-    } catch {}
+    onMessage(message); // attach()'s onmessage wrapper guards the whole delivery
   };
 
   const attach = (w: WorkerLike): void => {
-    try {
-      worker = w;
-      w.onmessage = (e) => {
-        try {
-          deliver(e?.data as FromWorkerMessage);
-        } catch {}
-      };
-    } catch {}
+    worker = w;
+    w.onmessage = (e) => {
+      try {
+        deliver(e?.data as FromWorkerMessage);
+      } catch {}
+    };
   };
 
   /** Last resort — the injected local worker, else a never-ready stub. */
@@ -188,14 +184,30 @@ export function createTransport(deps: TransportDeps = {}): Transport {
     return { onmessage: null, postMessage() {}, terminate() {} };
   };
 
+  /**
+   * Attach a real Worker and arm the watchdog: construction can succeed while
+   * the script is still killed asynchronously (CSP) or throws on load, in
+   * which case `worker-ready` never arrives and capture would silently stop.
+   */
+  const attachWatched = (w: WorkerLike): void => {
+    attach(w);
+    watchdog = setTimeout(() => {
+      if (ready || dead) return;
+      try {
+        w.terminate?.();
+      } catch {}
+      attach(lastResort());
+    }, READY_TIMEOUT_MS);
+  };
+
   const bootstrap = async (): Promise<void> => {
     try {
       if (deps.workerUrl) {
-        attach(startWorker(deps.workerUrl));
+        attachWatched(startWorker(deps.workerUrl));
         return;
       }
       if (deps.makeWorker) {
-        attach(deps.makeWorker());
+        attachWatched(deps.makeWorker());
         return;
       }
     } catch {
@@ -206,7 +218,7 @@ export function createTransport(deps: TransportDeps = {}): Transport {
       if (url && deps.fetchText) {
         const source = await deps.fetchText(url);
         if (typeof source === 'string' && source) {
-          attach(
+          attachWatched(
             startWorker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))),
           );
           return;
@@ -222,13 +234,8 @@ export function createTransport(deps: TransportDeps = {}): Transport {
     },
     send(m) {
       if (dead || !m) return;
-      try {
-        if (ready && worker) post(m);
-        else {
-          queue.push(m);
-          if (queue.length > limit) queue.shift();
-        }
-      } catch {}
+      if (ready && worker) post(m);
+      else if (queue.push(m) > limit) queue.shift();
     },
     start() {
       if (started || dead) return;
@@ -243,6 +250,7 @@ export function createTransport(deps: TransportDeps = {}): Transport {
     },
     destroy() {
       dead = true;
+      clearTimeout(watchdog);
       queue.length = 0;
       try {
         worker?.terminate?.();

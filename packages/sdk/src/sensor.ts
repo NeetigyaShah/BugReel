@@ -74,8 +74,6 @@ export interface SensorBridge {
    * and arms the ~2s error-UI watch on network events with status >=400.
    */
   send(event: RawBugReelEvent): void;
-  now(): number;
-  randomId(): string;
   /** Swap in the rich target describer once the lazy capture chunk has loaded. */
   setDescribeTarget(describe: (el: Element) => EventTargetRef): void;
 }
@@ -203,9 +201,12 @@ export function createSensor(options: SensorOptions): SensorHandle {
       watches.forEach((w, id) => {
         if (!w.errorUi) closeWatch(id, true);
       });
-      // A >=400 response starts the ~2s error-UI insertion watch.
-      const status = (event as NetworkEvent).status;
-      if (typeof status === 'number' && status >= 400) watch(event.id, true, ERROR_UI_WATCH_MS);
+      // A >=400 response — or a request that never got one (CORS / network
+      // failure, no status) — starts the ~2s error-UI insertion watch.
+      const { status, corsBlocked } = event as NetworkEvent;
+      if ((typeof status === 'number' && status >= 400) || corsBlocked) {
+        watch(event.id, true, ERROR_UI_WATCH_MS);
+      }
     }
     emit(event);
   };
@@ -279,8 +280,6 @@ export function createSensor(options: SensorOptions): SensorHandle {
   return {
     bridge: {
       send,
-      now,
-      randomId,
       setDescribeTarget(next) {
         describe = next;
       },

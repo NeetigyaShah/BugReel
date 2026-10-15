@@ -168,7 +168,7 @@ describe('SilentApiErrorDetector', () => {
 describe('RageClickDetector', () => {
   const burst = (times: number[]): ClickEvent[] => times.map((t, i) => payClick(`r${i + 1}`, t));
 
-  it('flags three clicks on the same element inside 800ms', () => {
+  it('flags three clicks on the same element inside one second', () => {
     const [c1, c2, c3] = burst([0, 300, 600]);
     const finding = RageClickDetector.onEvent(c3!, [c1!, c2!, c3!]);
 
@@ -179,7 +179,7 @@ describe('RageClickDetector', () => {
       selector: 'button#pay',
       relatedEventIds: ['r1', 'r2', 'r3'],
     });
-    expect(finding?.headline).toBe("User rage-clicked 'Pay Now' (3× in 800ms)");
+    expect(finding?.headline).toBe("User rage-clicked 'Pay Now' (3× in 1000ms)");
     expect(finding?.explanation).toContain('unresponsive');
   });
 
@@ -196,12 +196,12 @@ describe('RageClickDetector', () => {
   });
 
   it('requires the burst to fit inside the window', () => {
-    const cs = burst([0, 500, 1_300]);
+    const cs = burst([0, 500, 1_600]);
     expect(RageClickDetector.onEvent(cs[2]!, cs)).toBeNull();
   });
 
-  it('fires when the oldest click sits exactly on the 800ms edge', () => {
-    const cs = burst([0, 400, 800]);
+  it('fires when the oldest click sits exactly on the one-second edge', () => {
+    const cs = burst([0, 500, 1_000]);
     expect(RageClickDetector.onEvent(cs[2]!, cs)).not.toBeNull();
   });
 

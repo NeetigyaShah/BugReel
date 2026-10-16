@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- auto-init via data-* attributes; ?webhook=<url> sets the Mode-2 target -->
+    <script id="br-loader" src="../../packages/sdk/dist/loader.global.js" data-bugreel-pill="true"></script>
+    <script>
+      // The capture chunk reads data-bugreel-webhook off this script tag at
+      // open time, so a query-param-set attribute still lands.
+      const webhook = new URLSearchParams(location.search).get('webhook');
+      if (webhook) document.getElementById('br-loader').dataset.bugreelWebhook = webhook;
+    </script>
+  </head>
+  <body>
+    <h1>webhook fixture</h1>
+    <button id="btn">do thing</button>
+    <input id="field" />
+    <script>
+      document.getElementById('btn').addEventListener('click', () => {
+        document.body.insertAdjacentHTML('beforeend', '<div id="out">done</div>');
+        fetch('/api/never-here').catch(() => {});
+        console.error('fixture-error');
+      });
+    </script>
+  </body>
+</html>

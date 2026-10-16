@@ -33,7 +33,11 @@ export function initBugReel(config: BugReelConfig = {}): BugReelHandle {
       // also hands it a dynamic-import modal installer so chunk 3 stays lazy.
       installCapture(deps) {
         deps.installModal = (modalDeps) =>
-          import('./modal').then((m) => m.installModal(modalDeps));
+          // Mode 2 (T10): the npm config carries `webhookUrl`; a per-script
+          // `data-bugreel-webhook` attribute (already read by capture) wins.
+          import('./modal').then((m) =>
+            m.installModal({ ...modalDeps, webhook: modalDeps.webhook ?? config.webhookUrl }),
+          );
         return installCapture(deps);
       },
     });

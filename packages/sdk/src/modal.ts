@@ -8,6 +8,7 @@ import {
   type SnapshotImage,
   type SnapshotWindow,
 } from './snapshot';
+import { dispatchWebhook, type WebhookFetch } from './webhook';
 import { guard, uuid } from './util';
 import type {
   BugReelReport,
@@ -72,10 +73,17 @@ export interface ModalDeps {
   decodeImage?(bytes: Uint8Array): Promise<SnapshotImage | undefined>;
   createAnnotator?(opts: AnnotatorOptions): AnnotatorHandle | undefined;
   /**
-   * Mode-2 flag reserved for the webhook ticket (T10): a configured webhook
-   * means submit should dispatch rather than only persist locally.
+   * Mode-2 webhook target (T10, ADR-0006). When set, submit dispatches through
+   * `dispatchWebhook` instead of the IndexedDB save. The URL may carry a
+   * secret token — it is never echoed into status text.
    */
-  webhook?: boolean;
+  webhook?: string;
+  /**
+   * Fetch seam for webhook dispatch — the capture chunk hands over the
+   * pre-wrap `window.fetch` so the POST (its URL carries a token) never
+   * self-reports into the event buffer. Defaults to globalThis.fetch.
+   */
+  fetch?: WebhookFetch;
   /**
    * T10 extension seam — replaces the default submit path (IndexedDB save in
    * Mode 1). Awaited; a throw or rejection drops the modal into its error
@@ -737,21 +745,147 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
     }, PACK_TIMEOUT_MS);
   });
 
+  /* ------------------- Mode-2 submit machinery (T10) ------------------- */
+
+  /**
+   * requestId-correlated pack requests for submit — the download button's
+   * single-shot `pendingPack` stays untouched; waiters resolve via the
+   * extra `bugreel:bugpack`/`bugreel:error` listeners registered below.
+   */
+  const packWaiters = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; settle(err?: Error, bytes?: Uint8Array): void }
+  >();
+
+  const settlePacks = (requestId: string | undefined, err?: Error, bytes?: Uint8Array): void => {
+    for (const [id, waiter] of [...packWaiters]) {
+      // An uncorrelated worker error cancels in-flight packs — same rule the
+      // download button applies to pendingPack.
+      if (requestId !== undefined && requestId !== id) continue;
+      packWaiters.delete(id);
+      clearTimeout(waiter.timer);
+      waiter.settle(err, bytes);
+    }
+  };
+
+  /** Ask the worker for a .bugpack — rejects on timeout or a correlated bugreel:error. */
+  const requestPack = (req: {
+    answers: ReporterAnswers;
+    media?: BugpackMediaEntry[];
+    lite?: boolean;
+  }): Promise<Uint8Array> =>
+    new Promise((resolve, reject) => {
+      const requestId = sendWorker({ type: 'bugreel:pack', ...req });
+      if (!requestId) {
+        reject(new Error('report pipeline unavailable'));
+        return;
+      }
+      const timer = setTimeout(() => {
+        packWaiters.delete(requestId);
+        reject(new Error('pack timed out'));
+      }, PACK_TIMEOUT_MS);
+      packWaiters.set(requestId, {
+        timer,
+        settle: (err, bytes) => (err ? reject(err) : resolve(bytes ?? new Uint8Array())),
+      });
+    });
+
+  /**
+   * Mode-2 dispatch (ADR-0006): pack the .bugpack, then let webhook.ts shape
+   * the POST per detected target. Replaces the IndexedDB save; the lite/Slack
+   * fallbacks hand the reporter a local download of the full pack.
+   */
+  const submitViaWebhook = async (ctx: {
+    report: BugReelReport;
+    answers: ReporterAnswers;
+    media?: BugpackMediaEntry[];
+  }): Promise<void> => {
+    setStatus('Packing .bugpack…');
+    const media = ctx.media ?? [];
+    const bugpack = await requestPack({ answers: ctx.answers, media });
+    setStatus('Submitting…');
+    const result = await dispatchWebhook(
+      { url: String(deps.webhook), fetch: deps.fetch },
+      {
+        report: ctx.report,
+        bugpack,
+        media,
+        download,
+        packLite: () =>
+          requestPack({ answers: ctx.answers, media, lite: true }).catch(() => undefined),
+      },
+    );
+    if (!result.ok) {
+      setPhase('ready');
+      setStatus(
+        `Submit failed — ${result.error ?? 'dispatch failed'}. Your report is still here, try again or download it.`,
+        true,
+      );
+      return;
+    }
+    setPhase('submitted');
+    setStatus(
+      result.lite
+        ? 'Full report too large — sent the lite bugpack; the full .bugpack downloaded locally.'
+        : result.downloaded
+          ? 'Report submitted — the .bugpack downloaded locally (text-only webhook).'
+          : 'Report submitted.',
+    );
+  };
+
+  // Waiter replies ride the same whole-message DOM events as the download
+  // button — a second pair of listeners keeps the single-shot path untouched.
+  on(doc, 'bugreel:bugpack', (e: { detail?: unknown }) => {
+    const d = e?.detail as { requestId?: string; bugpack?: Uint8Array | ArrayLike<number> };
+    // A pack reply always carries its requestId — only exact matches resolve.
+    if (d?.requestId === undefined || !packWaiters.has(d.requestId)) return;
+    settlePacks(
+      d.requestId,
+      undefined,
+      d.bugpack instanceof Uint8Array ? d.bugpack : new Uint8Array(d.bugpack ?? []),
+    );
+  });
+  on(doc, 'bugreel:error', (e: { detail?: unknown }) => {
+    const d = e?.detail as { requestId?: string; message?: unknown };
+    settlePacks(
+      d?.requestId,
+      new Error(typeof d?.message === 'string' ? d.message : 'worker error'),
+    );
+  });
+  cleanups.push(() => {
+    for (const [, waiter] of packWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.settle(new Error('modal closed'));
+    }
+    packWaiters.clear();
+  });
+
   const submitAction = guard(async (): Promise<void> => {
     const r = currentReport();
     if (!r || phase === 'submitting') return;
     setPhase('submitting');
     setStatus('Submitting…');
     try {
-      // T09a: attachments ride `ctx.media`; the report's media manifest names them.
-      const ctx = {
+      // T09a: attachments ride `ctx.media`; the report's media manifest names
+      // them — and the manifest now reaches Mode-1 persistence too.
+      const ctx: {
+        report: BugReelReport;
+        answers: ReporterAnswers;
+        media?: BugpackMediaEntry[];
+      } = {
         report: reportWithMedia(r),
         answers: answers(),
         media: mediaEntries.length ? mediaEntries.slice() : undefined,
       };
-      // T10 seam: a configured webhook injects onSubmit (dispatch); the
-      // Mode-1 default persists the report to IndexedDB.
-      const result = deps.onSubmit ? await deps.onSubmit(ctx) : await store?.saveReport(r);
+      // Mode 2 (T10): a configured webhook dispatches instead of persisting —
+      // it wins over both the onSubmit seam and the IndexedDB default.
+      if (deps.webhook?.trim()) {
+        await submitViaWebhook(ctx);
+        return;
+      }
+      const result = deps.onSubmit
+        ? await deps.onSubmit(ctx)
+        : await store?.saveReport(ctx.report);
       setPhase('submitted');
       setStatus(
         typeof result === 'string'

@@ -299,6 +299,156 @@ describe('mountModal', () => {
     expect(enabled(h)).toEqual([true, true, true, true]);
   });
 
+  /* ------------------------- Mode-2 webhook submit (T10) ------------------------- */
+
+  it('Mode 2: submit packs a .bugpack and dispatches to the webhook instead of the store', async () => {
+    const calls: { url: string; init: { body: FormData | string } }[] = [];
+    const { deps, sent, saved } = setup({
+      report: report(),
+      webhook: 'https://hooks.example.test/bugreel',
+      fetch: async (url, init) => {
+        calls.push({ url, init });
+        return { ok: true, status: 200 };
+      },
+    });
+    const h = mount(deps);
+    fillBoth(h, { tryingToDo: 'check out', wentWrong: 'it broke' });
+    br<HTMLButtonElement>(h, 'submit').click();
+
+    await vi.waitFor(() => expect(sent.some((m) => m.type === 'bugreel:pack')).toBe(true));
+    const pack = sent.find((m) => m.type === 'bugreel:pack')!;
+    expect(pack.answers).toEqual({ tryingToDo: 'check out', wentWrong: 'it broke' });
+    expect(text(h, 'status')).toContain('Packing');
+
+    deliver('bugreel:bugpack', { requestId: pack.requestId, bugpack: new Uint8Array([80, 75, 3]) });
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]!.url).toBe('https://hooks.example.test/bugreel');
+    // Custom target → multipart report + bugpack parts (happy-dom drops the
+    // Blob filename, so assert the part content/type instead of its name).
+    const body = calls[0]!.init.body as FormData;
+    const reportPart = body.get('report') as File;
+    expect(JSON.parse(await reportPart.text()).meta.sessionId).toBe('sess-1');
+    const packPart = body.get('bugpack') as File;
+    expect(packPart.type).toBe('application/zip');
+    expect([...new Uint8Array(await packPart.arrayBuffer())]).toEqual([80, 75, 3]);
+    await vi.waitFor(() => expect(text(h, 'status')).toContain('Report submitted'));
+    expect(saved).toHaveLength(0); // dispatch replaces the IDB save
+  });
+
+  it('Mode 2 + Slack: downloads the .bugpack locally and says so', async () => {
+    const calls: { init: { headers?: Record<string, string>; body: unknown } }[] = [];
+    const { deps, sent, downloads } = setup({
+      report: report(),
+      webhook: 'https://hooks.slack.com/services/T/B/x',
+      fetch: async (_url, init) => {
+        calls.push({ init });
+        return { ok: true, status: 200 };
+      },
+    });
+    const h = mount(deps);
+    fillBoth(h);
+    br<HTMLButtonElement>(h, 'submit').click();
+    const pack = sent.find((m) => m.type === 'bugreel:pack')!;
+    deliver('bugreel:bugpack', { requestId: pack.requestId, bugpack: new Uint8Array([80, 75]) });
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]!.init.headers).toEqual({ 'Content-Type': 'text/plain' });
+    expect(downloads).toHaveLength(1);
+    expect(downloads[0]!.filename).toMatch(/\.bugpack$/);
+    await vi.waitFor(() => expect(text(h, 'status')).toContain('downloaded locally'));
+  });
+
+  it('Mode 2 + Discord oversize: re-packs lite, sends it, and downloads the full pack', async () => {
+    const calls: { body: FormData }[] = [];
+    const { deps, sent, downloads } = setup({
+      report: report(),
+      webhook: 'https://discord.com/api/webhooks/1/tok',
+      fetch: async (_url, init) => {
+        calls.push({ body: init.body as FormData });
+        return { ok: true, status: 200 };
+      },
+    });
+    const h = mount(deps);
+    fillBoth(h);
+    br<HTMLButtonElement>(h, 'submit').click();
+
+    const first = sent.find((m) => m.type === 'bugreel:pack')!;
+    expect((first as { lite?: boolean }).lite).toBeUndefined();
+    // Trip the 7.5MB guard.
+    deliver('bugreel:bugpack', {
+      requestId: first.requestId,
+      bugpack: new Uint8Array(8_000_000),
+    });
+    await vi.waitFor(() =>
+      expect(
+        sent.filter((m) => m.type === 'bugreel:pack' && (m as { lite?: boolean }).lite === true),
+      ).toHaveLength(1),
+    );
+    const litePack = sent.filter((m) => m.type === 'bugreel:pack')[1]!;
+    deliver('bugreel:bugpack', { requestId: litePack.requestId, bugpack: new Uint8Array([80, 75, 9]) });
+
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect((calls[0]!.body.get('files[0]') as File).size).toBe(3); // the lite pack went out
+    expect(downloads).toHaveLength(1);
+    expect(downloads[0]!.bytes.byteLength).toBe(8_000_000); // the full pack stayed local
+    await vi.waitFor(() => expect(text(h, 'status')).toContain('too large'));
+    expect(text(h, 'status')).toContain('downloaded locally');
+  });
+
+  it('Mode 2 failure: non-2xx lands in the error state with retry possible', async () => {
+    const { deps, sent, saved } = setup({
+      report: report(),
+      webhook: 'https://hooks.slack.com/services/T/B/x',
+      fetch: async () => ({ ok: false, status: 500 }),
+    });
+    const h = mount(deps);
+    fillBoth(h);
+    br<HTMLButtonElement>(h, 'submit').click();
+    const pack = sent.find((m) => m.type === 'bugreel:pack')!;
+    deliver('bugreel:bugpack', { requestId: pack.requestId, bugpack: new Uint8Array([1]) });
+    await vi.waitFor(() => expect(text(h, 'status')).toContain('Submit failed'));
+    expect(text(h, 'status')).toContain('500');
+    expect(text(h, 'status')).not.toContain('hooks.slack.com'); // token never echoed
+    expect(enabled(h)).toEqual([true, true, true, true]);
+    expect(saved).toHaveLength(0);
+  });
+
+  it('Mode 2 failure: a pack timeout resolves to the error state', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps } = setup({
+        report: report(),
+        webhook: 'https://hooks.example.test/x',
+        fetch: async () => ({ ok: true, status: 200 }),
+      });
+      const h = mount(deps);
+      fillBoth(h);
+      br<HTMLButtonElement>(h, 'submit').click();
+      await vi.advanceTimersByTimeAsync(16_000);
+      expect(text(h, 'status')).toContain('Submit failed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Mode 2: a stale bugpack reply cannot resolve a submit pack', async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = setup({
+      report: report(),
+      webhook: 'https://hooks.example.test/x',
+      fetch: async () => {
+        calls.push(1);
+        return { ok: true, status: 200 };
+      },
+    });
+    const h = mount(deps);
+    fillBoth(h);
+    br<HTMLButtonElement>(h, 'submit').click();
+    const pack = sent.find((m) => m.type === 'bugreel:pack')!;
+    deliver('bugreel:bugpack', { requestId: 'stale', bugpack: new Uint8Array([9]) });
+    deliver('bugreel:bugpack', { requestId: pack.requestId, bugpack: new Uint8Array([9]) });
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+  });
+
   it('closes on the × button, Escape, and backdrop click — and re-opens on bugreel:open', () => {
     const { deps } = setup({ report: report() });
     const h = mount(deps);

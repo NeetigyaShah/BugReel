@@ -369,6 +369,56 @@ describe('modal bootstrap (chunk 3)', () => {
     }
   });
 
+  it('forwards data-bugreel-webhook from our own script tag to modal deps (CDN path)', () => {
+    const installModal = vi.fn((_deps: unknown) => ({ el: {} as HTMLElement, open() {}, close() {}, destroy: vi.fn() }));
+    win.document.created.push(
+      { tag: 'SCRIPT', src: 'https://cdn.test/loader.global.js', dataset: { bugreelWebhook: 'https://discord.com/api/webhooks/1/x' } } as never,
+      // An unrelated script tag must not win.
+      { tag: 'SCRIPT', src: 'https://cdn.test/other.js' } as never,
+    );
+    makeCapture({ installModal });
+    win.document.fire('bugreel:open', {});
+    const deps = installModal.mock.calls[0]![0] as { webhook?: string };
+    expect(deps.webhook).toBe('https://discord.com/api/webhooks/1/x');
+  });
+
+  it('reads the webhook attribute off any script carrying data-bugreel-*', () => {
+    const installModal = vi.fn((_deps: unknown) => ({ el: {} as HTMLElement, open() {}, close() {}, destroy: vi.fn() }));
+    win.document.created.push(
+      { tag: 'SCRIPT', dataset: { bugreelPill: 'true', bugreelWebhook: 'https://hooks.slack.com/services/T/B/x' } } as never,
+    );
+    makeCapture({ installModal });
+    win.document.fire('bugreel:open', {});
+    const deps = installModal.mock.calls[0]![0] as { webhook?: string };
+    expect(deps.webhook).toBe('https://hooks.slack.com/services/T/B/x');
+  });
+
+  it('leaves webhook unset when no script tag carries it', () => {
+    const installModal = vi.fn((_deps: unknown) => ({ el: {} as HTMLElement, open() {}, close() {}, destroy: vi.fn() }));
+    win.document.created.push({ tag: 'SCRIPT', src: 'https://cdn.test/loader.global.js' } as never);
+    makeCapture({ installModal });
+    win.document.fire('bugreel:open', {});
+    const deps = installModal.mock.calls[0]![0] as { webhook?: string };
+    expect(deps.webhook).toBeUndefined();
+  });
+
+  it('hands the modal the PRE-wrap fetch so webhook POSTs never self-report', async () => {
+    const origFetch = vi.fn(async () => fakeResponse(200));
+    win.fetch = origFetch;
+    const installModal = vi.fn((_deps: unknown) => ({ el: {} as HTMLElement, open() {}, close() {}, destroy: vi.fn() }));
+    const { sink } = makeCapture({ installModal });
+    win.document.fire('bugreel:open', {});
+    const deps = installModal.mock.calls[0]![0] as {
+      fetch?: (url: string, init: unknown) => Promise<unknown>;
+    };
+    expect(typeof deps.fetch).toBe('function');
+    await deps.fetch!('https://discord.com/api/webhooks/1/tok', { method: 'POST' });
+    expect(origFetch).toHaveBeenCalledTimes(1);
+    // The dispatch bypassed the wrapped fetch — no network event self-reported.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sink.events.filter((e) => e.type === 'fetch')).toHaveLength(0);
+  });
+
   it('a failed install does not latch — the next open retries', async () => {
     const installModal = vi.fn().mockReturnValueOnce(undefined).mockReturnValue({ el: {} as HTMLElement, open() {}, close() {}, destroy: vi.fn() });
     makeCapture({ installModal });

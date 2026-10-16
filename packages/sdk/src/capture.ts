@@ -5,6 +5,7 @@ import { injectScript } from './transport';
 import { guard, truncate, uuid } from './util';
 import type { SensorWindow } from './sensor';
 import type { ModalDeps, ModalHandle } from './modal';
+import type { WebhookFetch } from './webhook';
 import type {
   EventTargetRef,
   NetworkEvent,
@@ -17,6 +18,34 @@ const SHAKE_THRESHOLD = 25; // m/s² — a firm shake on accelerationIncludingGr
 const SHAKE_COOLDOWN_MS = 1_000;
 
 type AnyFn = (...args: any[]) => any;
+
+/**
+ * Read a `data-bugreel-*` dataset value off the page's own BugReel script
+ * elements — identified by sibling bundle name (loader/capture/modal
+ * .global.js) or by carrying any `data-bugreel-*` attribute at all. This is
+ * how the CDN path forwards `data-bugreel-webhook` to the modal without
+ * spending loader/app.ts budget on plumbing.
+ */
+const bugreelScriptAttr = (doc: unknown, key: 'bugreelWebhook'): string | undefined => {
+  try {
+    const scripts = (doc as {
+      getElementsByTagName?(tag: string): ArrayLike<unknown>;
+    } | null)?.getElementsByTagName?.('script');
+    for (const el of Array.from(scripts ?? [])) {
+      const s = el as { src?: unknown; dataset?: Record<string, string | undefined> };
+      const ours =
+        typeof s?.src === 'string' &&
+        ['loader.global.js', 'capture.global.js', 'modal.global.js'].some((name) =>
+          (s.src as string).endsWith(name),
+        );
+      const marked = Object.keys(s?.dataset ?? {}).some((k) => k.startsWith('bugreel'));
+      if (!ours && !marked) continue;
+      const value = s?.dataset?.[key];
+      if (typeof value === 'string' && value.trim()) return value;
+    }
+  } catch {}
+  return undefined;
+};
 
 interface EventTargetLike {
   addEventListener(type: string, listener: AnyFn, options?: unknown): void;
@@ -462,7 +491,18 @@ export function installCapture(deps: CaptureDeps): CaptureHandle {
   };
   const loadModal = guard((): void => {
     if (modalLoaded || modalLoading) return;
-    const modalDeps: ModalDeps = { window: win, send: deps.workerSend };
+    const modalDeps: ModalDeps = {
+      window: win,
+      send: deps.workerSend,
+      // Mode 2 (T10): the CDN webhook URL lives on the loader's script tag.
+      webhook: bugreelScriptAttr(win?.document, 'bugreelWebhook'),
+      // The PRE-wrap fetch: a dispatch POST through the sensor-wrapped fetch
+      // would self-report the webhook URL (a token) into the event buffer.
+      fetch:
+        typeof origFetch === 'function'
+          ? (origFetch as unknown as WebhookFetch).bind(win)
+          : undefined,
+    };
     // npm path — the entry injected an import('./modal') installer.
     if (deps.installModal) {
       modalLoading = true;

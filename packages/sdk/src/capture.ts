@@ -75,6 +75,13 @@ export interface CaptureDeps {
    */
   workerSend?(message: ToWorkerMessage): void;
   /**
+   * Programmatic webhook URL (npm `init({webhookUrl})` reaches the modal via
+   * the `installModal` seam in index.ts; CDN config uses the script-tag
+   * attribute — `loader.ts`/`app.ts` stay size-budget-frozen). The script-tag
+   * attribute wins when both exist, matching the npm seam.
+   */
+  webhookUrl?: string;
+  /**
    * Modal installer — the npm entry injects `import('./modal')` so chunk 3
    * resolves through the bundler instead of a sibling <script>. Absent → the
    * CDN path injects sibling `modal.global.js`.
@@ -494,8 +501,9 @@ export function installCapture(deps: CaptureDeps): CaptureHandle {
     const modalDeps: ModalDeps = {
       window: win,
       send: deps.workerSend,
-      // Mode 2 (T10): the CDN webhook URL lives on the loader's script tag.
-      webhook: bugreelScriptAttr(win?.document, 'bugreelWebhook'),
+      // Mode 2 (T10): the CDN webhook URL lives on the loader's script tag;
+      // a programmatic config value is the fallback (attr wins, npm-parity).
+      webhook: bugreelScriptAttr(win?.document, 'bugreelWebhook') ?? deps.webhookUrl,
       // The PRE-wrap fetch: a dispatch POST through the sensor-wrapped fetch
       // would self-report the webhook URL (a token) into the event buffer.
       fetch:

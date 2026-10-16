@@ -64,6 +64,25 @@ describe('shouldStripForSnapshot', () => {
     expect(shouldStripForSnapshot($('plain'))).toBe(false);
     document.body.innerHTML = '';
   });
+
+  it('stage-1 parity: autocomplete + keyword rules strip form controls', () => {
+    document.body.innerHTML = `
+      <input id="cc" autocomplete="cc-number" />
+      <input id="tok" name="api_token" />
+      <textarea id="sec" name="secret_notes">hunter2</textarea>
+      <select id="otp" name="otp_code"></select>
+      <input id="ship" name="shipping_token" data-bugreel="allow" />
+      <div id="card" class="card">kept — keyword rules only gate form controls</div>`;
+    const $ = (id: string) => document.getElementById(id);
+    for (const id of ['cc', 'tok', 'sec', 'otp']) {
+      expect(shouldStripForSnapshot($(id)), id).toBe(true);
+    }
+    // The allow escape hatch beats the keyword match; non-form elements keep
+    // keyword-ish attributes without stripping.
+    expect(shouldStripForSnapshot($('ship'))).toBe(false);
+    expect(shouldStripForSnapshot($('card'))).toBe(false);
+    document.body.innerHTML = '';
+  });
 });
 
 describe('serializeForSnapshot', () => {

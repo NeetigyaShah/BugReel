@@ -370,9 +370,9 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
     wentWrong: String(wrongEl?.value ?? '').trim(),
   });
 
-  /** The report with live answers folded in — what preview/copy/submit see. */
+  /** The report with live answers + media manifest folded in — preview/copy/submit view. */
   const currentReport = (): BugReelReport | undefined =>
-    report ? withAnswers(report, answers()) : undefined;
+    report ? reportWithMedia(withAnswers(report, answers())) : undefined;
 
   const setStatus = (text: string, isError = false): void => {
     try {
@@ -606,6 +606,9 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
         setStatus('Snapshot captured but the image could not be decoded.', true);
         return;
       }
+      // A capture that resolved after close/destroy must not mount into a
+      // hidden or detached host — the annotator would wedge into dead UI.
+      if (destroyed || (el.style as { display?: string }).display === 'none') return;
       const create = deps.createAnnotator ?? createAnnotator;
       const handle = create({
         document: doc,
@@ -758,14 +761,15 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
   >();
 
   const settlePacks = (requestId: string | undefined, err?: Error, bytes?: Uint8Array): void => {
-    for (const [id, waiter] of [...packWaiters]) {
-      // An uncorrelated worker error cancels in-flight packs — same rule the
-      // download button applies to pendingPack.
-      if (requestId !== undefined && requestId !== id) continue;
-      packWaiters.delete(id);
-      clearTimeout(waiter.timer);
-      waiter.settle(err, bytes);
-    }
+    // Pack replies/errors always carry their requestId — exact matches only.
+    // An uncorrelated telemetry error (no requestId) must not kill a pack
+    // that would have succeeded.
+    if (requestId === undefined) return;
+    const waiter = packWaiters.get(requestId);
+    if (!waiter) return;
+    packWaiters.delete(requestId);
+    clearTimeout(waiter.timer);
+    waiter.settle(err, bytes);
   };
 
   /** Ask the worker for a .bugpack — rejects on timeout or a correlated bugreel:error. */
@@ -786,7 +790,11 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
       }, PACK_TIMEOUT_MS);
       packWaiters.set(requestId, {
         timer,
-        settle: (err, bytes) => (err ? reject(err) : resolve(bytes ?? new Uint8Array())),
+        settle: (err, bytes) => {
+          if (err) reject(err);
+          else if (bytes?.byteLength) resolve(bytes);
+          else reject(new Error('empty pack reply'));
+        },
       });
     });
 
@@ -826,7 +834,9 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
     setPhase('submitted');
     setStatus(
       result.lite
-        ? 'Full report too large — sent the lite bugpack; the full .bugpack downloaded locally.'
+        ? result.downloaded
+          ? 'Full report too large — sent the lite bugpack; the full .bugpack downloaded locally.'
+          : 'Full report too large — sent the lite bugpack.'
         : result.downloaded
           ? 'Report submitted — the .bugpack downloaded locally (text-only webhook).'
           : 'Report submitted.',
@@ -835,23 +845,23 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
 
   // Waiter replies ride the same whole-message DOM events as the download
   // button — a second pair of listeners keeps the single-shot path untouched.
-  on(doc, 'bugreel:bugpack', (e: { detail?: unknown }) => {
+  // guard() matches every sibling listener: hostile detail shapes must not
+  // throw back into the host's dispatch.
+  on(doc, 'bugreel:bugpack', guard((e: { detail?: unknown }) => {
     const d = e?.detail as { requestId?: string; bugpack?: Uint8Array | ArrayLike<number> };
     // A pack reply always carries its requestId — only exact matches resolve.
     if (d?.requestId === undefined || !packWaiters.has(d.requestId)) return;
-    settlePacks(
-      d.requestId,
-      undefined,
-      d.bugpack instanceof Uint8Array ? d.bugpack : new Uint8Array(d.bugpack ?? []),
-    );
-  });
-  on(doc, 'bugreel:error', (e: { detail?: unknown }) => {
+    const bytes =
+      d.bugpack instanceof Uint8Array ? d.bugpack : new Uint8Array(d.bugpack ?? []);
+    settlePacks(d.requestId, bytes.byteLength ? undefined : new Error('empty pack reply'), bytes);
+  }));
+  on(doc, 'bugreel:error', guard((e: { detail?: unknown }) => {
     const d = e?.detail as { requestId?: string; message?: unknown };
     settlePacks(
       d?.requestId,
       new Error(typeof d?.message === 'string' ? d.message : 'worker error'),
     );
-  });
+  }));
   cleanups.push(() => {
     for (const [, waiter] of packWaiters) {
       clearTimeout(waiter.timer);

@@ -48,6 +48,7 @@ interface ElementLike {
   insertBefore?(child: unknown, ref: unknown): unknown;
   childNodes?: ArrayLike<unknown>;
   children?: ArrayLike<unknown>;
+  parentElement?: unknown;
   querySelectorAll?(selector: string): ArrayLike<unknown>;
   clientWidth?: number;
   clientHeight?: number;
@@ -141,6 +142,28 @@ const num = (v: unknown, fallback = 0): number =>
  * never appear in a Snapshot. `data-bugreel="allow"` subtrees stay — they are
  * an explicit opt-in.
  */
+// Mirrors of the stage-1 firewall rules (ADR-0004) — duplicated rather than
+// imported because this predicate must work on loose fake shapes where
+// `closest()` against `[attr=val i]` selectors is unreliable.
+const SNAPSHOT_BLOCKED_TYPE = /^(?:password|hidden|file)$/;
+const SNAPSHOT_AUTOCOMPLETE = /(?:^|\s)(?:cc-|current-password|new-password|one-time-code)/;
+const SNAPSHOT_ATTR = /pass|pwd|secret|token|key|auth|cvv|cvc|ssn|tax_id|card|pin|otp/;
+const SNAPSHOT_FORM = /^(?:input|textarea|select)$/;
+const SNAPSHOT_KEYWORD_ATTRS = ['name', 'id', 'placeholder', 'aria-label'];
+
+/** `data-bugreel="allow"` on the node or an ancestor — the stage-1 escape hatch. */
+const ancestorAllows = (e: ElementLike): boolean => {
+  try {
+    for (let n: unknown = e; n; n = (n as ElementLike).parentElement) {
+      const flag = String((n as ElementLike).getAttribute?.('data-bugreel') ?? '')
+        .toLowerCase()
+        .trim();
+      if (flag === 'allow') return true;
+    }
+  } catch {}
+  return false;
+};
+
 export const shouldStripForSnapshot = (el: unknown): boolean => {
   try {
     const e = el as ElementLike | null | undefined;
@@ -151,22 +174,32 @@ export const shouldStripForSnapshot = (el: unknown): boolean => {
       tag === 'noscript' ||
       tag === 'template' ||
       tag === 'iframe' ||
+      tag === 'frame' ||
+      tag === 'frameset' ||
       tag === 'object' ||
       tag === 'embed' ||
       tag === 'bugreel-modal' // our own chrome — never part of the host page
     ) {
       return true;
     }
-    const flag = String(e.getAttribute?.('data-bugreel') ?? '').toLowerCase();
+    const attr = (name: string): string =>
+      String(e.getAttribute?.(name) ?? '').toLowerCase();
+    const flag = attr('data-bugreel').trim();
     if (flag === 'mask' || flag === 'block') return true;
     if (e.hasAttribute?.('data-bugreel-block') || e.hasAttribute?.('data-sensitive')) return true;
-    if (tag === 'input') {
-      const type = String(e.getAttribute?.('type') ?? '').toLowerCase();
-      if (type === 'password' || type === 'hidden' || type === 'file') return true;
-    }
-    return false;
+    if (!SNAPSHOT_FORM.test(tag)) return false;
+    if (SNAPSHOT_BLOCKED_TYPE.test(attr('type'))) return true;
+    // Stage-1 keyword/autocomplete parity (ADR-0004) — attribute-borne
+    // secrets (`value`, textarea text) DO serialize into the PNG, so the
+    // form-control rules must run here too. Masked ancestors are already
+    // pruned by the walker; `data-bugreel="allow"` stays the escape hatch.
+    if (ancestorAllows(e)) return false;
+    return (
+      SNAPSHOT_AUTOCOMPLETE.test(attr('autocomplete')) ||
+      SNAPSHOT_KEYWORD_ATTRS.some((name) => SNAPSHOT_ATTR.test(attr(name)))
+    );
   } catch {
-    return false;
+    return true;
   }
 };
 
@@ -606,7 +639,7 @@ const uploadSnapshot = async (
     } catch {
       return undefined;
     }
-    const file = await new Promise<unknown>((resolve) => {
+    const file = await timed(new Promise<unknown>((resolve) => {
       let done = false;
       const fin = (v: unknown): void => {
         if (!done) {
@@ -622,7 +655,7 @@ const uploadSnapshot = async (
       } catch {
         fin(undefined);
       }
-    });
+    }), 120_000); // engines without a 'cancel' event must not hang the chain
     try {
       input.remove?.();
     } catch {}

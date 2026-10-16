@@ -115,6 +115,20 @@ describe('createAnnotator', () => {
     expect(h).toBeUndefined();
   });
 
+  it('a tap with no pointermove still commits a single-point stroke', () => {
+    const { h, base, ink } = setup();
+    const s = stage(h);
+    evt(s, 'pointerdown', 20, 20);
+    evt(s, 'pointerup', 20, 20); // no move — browsers don't synthesize one
+    // The dot renders on ink (beginPath+moveTo+lineTo+stroke) then commits.
+    expect(ink.ctx.calls).toContain('beginPath');
+    expect(ink.ctx.calls).toContain('moveTo:20,20');
+    expect(ink.ctx.calls).toContain('lineTo:20.5,20.5'); // single-point dot
+    expect(ink.ctx.calls).toContain('stroke');
+    expect(base.ctx.calls.filter((c) => c.startsWith('drawImage'))).toHaveLength(2);
+    h.destroy();
+  });
+
   it('pen stroke previews on the ink canvas and commits to the base on pointerup', () => {
     const { h, base, ink } = setup();
     stroke(h, 10, 10, 60, 60);

@@ -67,7 +67,7 @@ test('Discord webhook receives the rich embed + .bugpack as multipart', async ({
   expect(payloadJson.embeds).toHaveLength(1);
   expect(payloadJson.embeds[0].footer.text).toContain('BugReel');
 
-  // No snapshot media yet (T09a unmerged) — files[0] is the .bugpack itself.
+  // No annotation was made in this spec — files[0] is the .bugpack itself.
   const filePart = parts.find((p) => p.includes('name="files[0]"'));
   expect(filePart).toBeTruthy();
   expect(filePart).toContain('.bugpack');

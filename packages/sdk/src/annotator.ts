@@ -192,11 +192,17 @@ export const createAnnotator = (opts: AnnotatorOptions): AnnotatorHandle | undef
   } catch {
     return undefined;
   }
-  const bar = doc.createElement('div') as { className: string; appendChild?(c: unknown): unknown };
-  const stage = doc.createElement('div') as HTMLElement & {
+  let bar: { className: string; appendChild?(c: unknown): unknown };
+  let stage: HTMLElement & {
     addEventListener?: (t: string, f: (...a: never[]) => void, o?: unknown) => void;
     removeEventListener?: (t: string, f: (...a: never[]) => void, o?: unknown) => void;
   };
+  try {
+    bar = doc.createElement('div') as typeof bar;
+    stage = doc.createElement('div') as typeof stage;
+  } catch {
+    return undefined;
+  }
   try {
     bar.className = 'br-anno-bar';
     stage.className = 'br-stage';
@@ -373,8 +379,12 @@ export const createAnnotator = (opts: AnnotatorOptions): AnnotatorHandle | undef
     if (!drawing) return;
     drawing = false;
     try {
-      // Commit the ink preview onto the base layer (redact already landed).
-      if (tool !== 'redact') base.ctx.drawImage?.(ink.canvas, 0, 0);
+      // Render the final stroke first — a tap with no pointermove (browsers
+      // don't synthesize one) must still land its single-point dot.
+      if (tool !== 'redact') {
+        drawStroke(ink.ctx, tool, stroke);
+        base.ctx.drawImage?.(ink.canvas, 0, 0);
+      }
       ink.ctx.clearRect?.(0, 0, W, H);
     } catch {}
     stroke = [];
@@ -384,18 +394,20 @@ export const createAnnotator = (opts: AnnotatorOptions): AnnotatorHandle | undef
   // Mouse fallback for environments without pointer events — once a real
   // pointer event arrives, the mouse path stays ignored (they double-fire).
   const mouseDown = (e: PointerLike): void => {
-    if (sawPointer) return;
-    const p = pointOf(e);
-    if (!inside(p) || drawing) return;
-    drawing = true;
-    stroke = [p];
-    lastRedact = undefined;
-    pushUndo();
-    e.preventDefault?.();
-    if (tool === 'redact') {
-      redactAt(p);
-      lastRedact = p;
-    }
+    try {
+      if (sawPointer) return;
+      const p = pointOf(e);
+      if (!inside(p) || drawing) return;
+      drawing = true;
+      stroke = [p];
+      lastRedact = undefined;
+      pushUndo();
+      e.preventDefault?.();
+      if (tool === 'redact') {
+        redactAt(p);
+        lastRedact = p;
+      }
+    } catch {}
   };
   const mouseMove = (e: PointerLike): void => move(e);
   const mouseUp = (): void => up();
@@ -406,7 +418,9 @@ export const createAnnotator = (opts: AnnotatorOptions): AnnotatorHandle | undef
   on(stage, 'pointercancel', up as (...a: never[]) => void);
   on(stage, 'mousedown', mouseDown as (...a: never[]) => void);
   on(stage, 'mousemove', mouseMove as (...a: never[]) => void);
-  on(stage, 'mouseup', mouseUp as (...a: never[]) => void);
+  // mouseup lives on the document: a drag released outside the stage must
+  // still end the stroke (setPointerCapture covers the pointer path only).
+  on(doc as unknown as { addEventListener?: (t: string, f: (...a: never[]) => void, o?: unknown) => void }, 'mouseup', mouseUp as (...a: never[]) => void);
 
   /* ------------------------- toolbar ------------------------- */
   const mkBtn = (

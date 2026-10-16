@@ -13,7 +13,7 @@ import { scheduleIdle, uuid } from './util';
 export const version = '0.1.0';
 
 export interface BugReelConfig {
-  /** Mode-2 webhook target — accepted now so installs are forward-compatible; dispatch lands with the webhook ticket (#12). */
+  /** Mode-2 webhook target (ADR-0006) — reached the modal via npm's installModal seam; on CDN the capture chunk re-reads `data-bugreel-webhook`. */
   webhookUrl?: string;
   /** Explicit worker script URL — overrides every worker resolution path. */
   workerUrl?: string;
@@ -191,9 +191,10 @@ export function startBugReel(config: BugReelConfig = {}, env: BugReelEnv = {}): 
       pill: config.pill,
       onOpen: open,
       // The lazy capture chunk also owns the modal bootstrap (chunk 3): it
-      // listens for `bugreel:open` and injects sibling `modal.global.js`,
-      // keeping the whole loader addition to this one field.
+      // listens for `bugreel:open` and injects sibling `modal.global.js`.
+      // webhookUrl is the programmatic path (CDN reads the attr lazily).
       workerSend: transport.send,
+      webhookUrl: config.webhookUrl,
     };
     if (env.installCapture) {
       capture = env.installCapture(deps);

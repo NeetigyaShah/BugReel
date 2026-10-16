@@ -39,7 +39,8 @@ function open(): void {
 const attrs = scriptEl?.dataset;
 if (scriptEl && attrs) {
   init({
-    webhookUrl: attrs.bugreelWebhook,
+    // webhookUrl is intentionally not read here: the capture chunk re-reads
+    // `data-bugreel-webhook` off the script tag itself, saving loader bytes.
     workerUrl: attrs.bugreelWorkerUrl,
     hotkey: attrs.bugreelHotkey,
     pill: attrs.bugreelPill === undefined ? 'auto' : attrs.bugreelPill === 'true',

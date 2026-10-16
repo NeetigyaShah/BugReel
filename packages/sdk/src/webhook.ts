@@ -113,9 +113,6 @@ export const detectWebhookKind = (url: string): WebhookKind => {
 const bytesOf = (data: Uint8Array | ArrayLike<number>): Uint8Array =>
   data instanceof Uint8Array ? data : new Uint8Array(data as ArrayLike<number>);
 
-const blobOf = (data: Uint8Array | ArrayLike<number>, type: string): Blob =>
-  new Blob([bytesOf(data) as unknown as BlobPart], { type });
-
 /** Deterministic .bugpack filename from the report timestamp (mirrors modal.bugpackName). */
 const bugpackFilename = (report: BugReelReport | undefined): string => {
   try {
@@ -164,7 +161,9 @@ const discordEmbed = (report: BugReelReport, hasSnapshot: boolean): Record<strin
       `${SEVERITY_MARK[severity] ?? '🐞'} ${top?.headline || 'BugReel bug report'}`,
       256,
     ),
-    description: truncate(reportExcerpt(report, (s) => `**${s}**`), 4096),
+    // Discord's per-embed 6000-char budget: title+description+fields must
+    // sum below it — worst case here is ~256+3800+2×800+footer ≈ 5.7K.
+    description: truncate(reportExcerpt(report, (s) => `**${s}**`), 3800),
     color: SEVERITY_COLOR[severity],
     footer: { text: truncate(`BugReel SDK v${report?.meta?.sdkVersion ?? 'unknown'}`, 2048) },
   };
@@ -176,10 +175,10 @@ const discordEmbed = (report: BugReelReport, hasSnapshot: boolean): Record<strin
   } catch {}
   const fields: Array<Record<string, unknown>> = [];
   if (answers.tryingToDo) {
-    fields.push({ name: 'Trying to do', value: truncate(answers.tryingToDo, 1024), inline: true });
+    fields.push({ name: 'Trying to do', value: truncate(answers.tryingToDo, 800), inline: true });
   }
   if (answers.wentWrong) {
-    fields.push({ name: 'Went wrong', value: truncate(answers.wentWrong, 1024), inline: true });
+    fields.push({ name: 'Went wrong', value: truncate(answers.wentWrong, 800), inline: true });
   }
   if (fields.length) embed.fields = fields;
   // The attached snapshot renders inline in the embed.
@@ -220,7 +219,7 @@ const dispatchDiscord = async (
     return { form, bytes: bytes + pack.byteLength };
   };
 
-  let pack = payload.bugpack;
+  let pack = bytesOf(payload.bugpack);
   let lite = false;
   let downloaded = false;
   let { form, bytes } = build(pack);
@@ -239,10 +238,12 @@ const dispatchDiscord = async (
       };
     }
     // The lite pack goes out; the reporter keeps the full .bugpack locally.
-    try {
-      payload.download?.(filename, pack);
-    } catch {}
-    downloaded = true;
+    if (payload.download) {
+      try {
+        payload.download(filename, pack);
+        downloaded = true;
+      } catch {}
+    }
     pack = litePack;
     lite = true;
     ({ form, bytes } = build(pack));
@@ -294,7 +295,12 @@ const dispatchSlack = async (
     },
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: truncate(reportExcerpt(report, (s) => `*${s}*`), 3000) },
+      text: {
+        type: 'mrkdwn',
+        // Escape AFTER bold-wrapping — mrkdwn leaves `*` alone, so markers
+        // survive while captured `<>&` can't break the block.
+        text: truncate(mrkdwn(reportExcerpt(report, (s) => `*${s}*`)), 3000),
+      },
     },
     {
       type: 'section',
@@ -316,26 +322,35 @@ const dispatchSlack = async (
           type: 'mrkdwn',
           text:
             `BugReel v${mrkdwn(String(report?.meta?.sdkVersion ?? 'unknown'))} · ` +
-            (pageUrl ? `<${mrkdwn(pageUrl)}|${mrkdwn(truncate(pageUrl, 120))}>` : 'unknown page') +
+            // `|` breaks Slack link syntax and unbounded URLs blow the 3000-
+            // char element limit — truncate the target, strip pipes.
+            (pageUrl
+              ? `<${mrkdwn(truncate(pageUrl, 240).replace(/\|/g, '%7C'))}|${mrkdwn(truncate(pageUrl, 120))}>`
+              : 'unknown page') +
             ' · the full `.bugpack` was downloaded locally',
         },
       ],
     },
   ];
   const body = JSON.stringify({
-    text: truncate(`BugReel bug report — ${top?.headline || 'see attached details'}`, 150),
+    text: truncate(`BugReel bug report — ${mrkdwn(top?.headline || 'see attached details')}`, 150),
     blocks,
   });
 
   // Slack incoming webhooks accept no files — the reporter keeps the pack.
-  try {
-    payload.download?.(bugpackFilename(report), payload.bugpack);
-  } catch {}
+  // The download fires before the POST so a failed dispatch can't strand it.
+  let downloaded = false;
+  if (payload.download) {
+    try {
+      payload.download(bugpackFilename(report), bytesOf(payload.bugpack));
+      downloaded = true;
+    } catch {}
+  }
   const result = await post(deps, kind, {
     headers: { 'Content-Type': 'text/plain' },
     body,
   });
-  return { ...result, downloaded: true };
+  return { ...result, downloaded };
 };
 
 /* ------------------------------- Custom ------------------------------ */
@@ -352,7 +367,7 @@ const dispatchCustom = async (
   );
   form.append(
     'bugpack',
-    new Blob([payload.bugpack as unknown as BlobPart], { type: 'application/zip' }),
+    new Blob([bytesOf(payload.bugpack) as unknown as BlobPart], { type: 'application/zip' }),
     bugpackFilename(payload.report),
   );
   return post(deps, 'custom', { body: form });

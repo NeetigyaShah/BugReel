@@ -85,12 +85,14 @@ test('download produces a valid .bugpack blob', async ({ page }) => {
   await page.locator('[data-br="download"]').click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.bugpack$/);
+  // Assert the status BEFORE awaiting the file read — the status auto-clears
+  // after ~4s and a slow readFile under parallel load can race past it.
+  await expect(page.locator('[data-br="status"]')).toContainText('Downloaded');
 
   // STORE-mode ZIP — local file header signature 'PK\x03\x04'.
   const file = await download.path();
   const bytes = await readFile(file!);
   expect([...bytes.subarray(0, 4)]).toEqual([0x50, 0x4b, 0x03, 0x04]);
-  await expect(page.locator('[data-br="status"]')).toContainText('Downloaded');
 
   expect(pageErrors).toEqual([]);
 });

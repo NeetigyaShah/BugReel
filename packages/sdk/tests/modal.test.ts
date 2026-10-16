@@ -607,4 +607,168 @@ describe('mountModal', () => {
     const pack = sent.find((m) => m.type === 'bugreel:pack');
     expect(pack?.media).toBeUndefined();
   });
+
+  /* ------------------------- T09b attachments ------------------------- */
+
+  const setFiles = (h: ModalHandle, files: File[]): void => {
+    const input = br<HTMLInputElement>(h, 'file-input');
+    Object.defineProperty(input, 'files', { value: files, configurable: true });
+    input.dispatchEvent(new window.Event('change'));
+  };
+
+  it('attaches multiple files via the picker, sizes them, and packs them', async () => {
+    const { deps, sent } = setup({ report: report() });
+    const h = mount(deps);
+    expect(br<HTMLElement>(h, 'media-size').textContent).toBe('');
+
+    setFiles(h, [
+      new File([new Uint8Array([1, 2, 3])], 'screen.png', { type: 'image/png' }),
+      new File([new Uint8Array([4, 5])], 'clip.webm', { type: 'video/webm' }),
+    ]);
+    await vi.waitFor(() => expect(text(h, 'media-list')).toContain('screen.png'));
+    expect(text(h, 'media-list')).toContain('clip.webm');
+    // A video attachment renders a <video> thumb, not an <img>.
+    expect(h.el.shadowRoot!.querySelector('.br-media-item video')).toBeTruthy();
+    // Aggregate size readout: "2 files · N KB".
+    expect(text(h, 'media-size')).toMatch(/^2 files · /);
+
+    fillBoth(h);
+    br<HTMLButtonElement>(h, 'download').click();
+    const pack = sent.find((m) => m.type === 'bugreel:pack');
+    expect(pack?.media?.map((m) => m.name).sort()).toEqual(['clip.webm', 'screen.png']);
+  });
+
+  it('rejects non-media and oversized files with an honest status', async () => {
+    const { deps } = setup({ report: report() });
+    const h = mount(deps);
+    // Batch 1: a wrong-type file is skipped.
+    setFiles(h, [new File([new Uint8Array([1])], 'notes.txt', { type: 'text/plain' })]);
+    // Batch 2: oversize is enforced via the File.size hint — fake it past the cap.
+    const input = br<HTMLInputElement>(h, 'file-input');
+    const huge = new File([new Uint8Array([1])], 'huge.webm', { type: 'video/webm' });
+    Object.defineProperty(huge, 'size', { value: 21 * 1024 * 1024 });
+    Object.defineProperty(input, 'files', {
+      value: [huge, new File([new Uint8Array([1])], 'ok.png', { type: 'image/png' })],
+      configurable: true,
+    });
+    input.dispatchEvent(new window.Event('change'));
+    await vi.waitFor(() => expect(text(h, 'status')).toContain('skipped'));
+    expect(text(h, 'media-list')).toContain('ok.png');
+    expect(text(h, 'media-list')).not.toContain('huge.webm');
+  });
+
+  it('dedupes colliding attachment names', async () => {
+    const { deps } = setup({ report: report() });
+    const h = mount(deps);
+    const f = () => new File([new Uint8Array([1])], 'shot.png', { type: 'image/png' });
+    setFiles(h, [f(), f()]);
+    await vi.waitFor(() => expect(text(h, 'media-list')).toContain('shot (2).png'));
+  });
+
+  it('a real drop event (dataTransfer.files) attaches files and toggles the hover class', async () => {
+    const { deps } = setup({ report: report() });
+    const h = mount(deps);
+    const dz = br<HTMLElement>(h, 'dropzone');
+
+    const dragover = new window.Event('dragover', { bubbles: true, cancelable: true });
+    dz.dispatchEvent(dragover);
+    expect(dragover.defaultPrevented).toBe(true);
+    expect(dz.classList.contains('br-over')).toBe(true);
+
+    const drop = new window.Event('drop', { bubbles: true, cancelable: true });
+    Object.assign(drop, {
+      dataTransfer: {
+        files: [new File([new Uint8Array([9])], 'dropped.png', { type: 'image/png' })],
+      },
+    });
+    dz.dispatchEvent(drop);
+    await vi.waitFor(() => expect(text(h, 'media-list')).toContain('dropped.png'));
+    expect(dz.classList.contains('br-over')).toBe(false);
+    expect(drop.defaultPrevented).toBe(true);
+  });
+
+  it('accepts media files that report an empty MIME type via extension', async () => {
+    const { deps } = setup({ report: report() });
+    const h = mount(deps);
+    const noType = new File([new Uint8Array([1])], 'clue.webm', { type: 'video/webm' });
+    Object.defineProperty(noType, 'type', { value: '' });
+    setFiles(h, [noType]);
+    await vi.waitFor(() => expect(text(h, 'media-list')).toContain('clue.webm'));
+  });
+
+  it('the size readout clears when the last attachment is removed', async () => {
+    const { deps } = setup({ report: report() });
+    const h = mount(deps);
+    setFiles(h, [new File([new Uint8Array([1])], 'a.png', { type: 'image/png' })]);
+    await vi.waitFor(() => expect(text(h, 'media-size')).toMatch(/^1 file · /));
+    (h.el.shadowRoot!.querySelector('.br-media-remove') as HTMLButtonElement).click();
+    expect(text(h, 'media-size')).toBe('');
+  });
+
+  it('hides the record button where recording is unsupported (iOS Safari path)', () => {
+    const { deps } = setup({ report: report() });
+    const h = mount(deps);
+    // happy-dom lacks getDisplayMedia + MediaRecorder → the picker path.
+    expect(br<HTMLElement>(h, 'record').classList.contains('br-hidden')).toBe(true);
+    expect(br<HTMLElement>(h, 'dropzone')).toBeTruthy();
+  });
+
+  it('record → 15s clip → screen-recording.webm media entry', async () => {
+    let resolveDone: ((r: { bytes: Uint8Array; mimeType: string } | undefined) => void) | undefined;
+    const handle = {
+      done: new Promise<{ bytes: Uint8Array; mimeType: string } | undefined>((res) => {
+        resolveDone = res;
+      }),
+      stop: vi.fn(),
+      active: true,
+    };
+    const recordScreen = vi.fn(() => handle);
+    const { deps, sent } = setup({ report: report(), recordScreen });
+    const h = mount(deps);
+    const btn = br<HTMLButtonElement>(h, 'record');
+    expect(btn.classList.contains('br-hidden')).toBe(false);
+
+    btn.click();
+    expect(recordScreen).toHaveBeenCalled();
+    expect(text(h, 'status')).toContain('Recording');
+    expect(btn.textContent).toContain('Stop');
+
+    resolveDone!({ bytes: new Uint8Array([7, 8, 9]), mimeType: 'video/webm' });
+    await vi.waitFor(() => expect(text(h, 'media-list')).toContain('screen-recording.webm'));
+    expect(text(h, 'status')).toContain('recording attached');
+
+    fillBoth(h);
+    br<HTMLButtonElement>(h, 'download').click();
+    const pack = sent.find((m) => m.type === 'bugreel:pack');
+    const webm = pack?.media?.find((m) => m.name === 'screen-recording.webm');
+    expect(webm?.mimeType).toBe('video/webm');
+    expect(webm?.data.byteLength).toBe(3);
+  });
+
+  it('a second click stops recording early via the handle', async () => {
+    const handle = {
+      done: new Promise<undefined>(() => {}),
+      stop: vi.fn(),
+      active: true,
+    };
+    const { deps } = setup({ report: report(), recordScreen: vi.fn(() => handle) });
+    const h = mount(deps);
+    const btn = br<HTMLButtonElement>(h, 'record');
+    btn.click();
+    btn.click();
+    expect(handle.stop).toHaveBeenCalled();
+  });
+
+  it('destroy() stops an in-flight recording', () => {
+    const handle = {
+      done: new Promise<undefined>(() => {}),
+      stop: vi.fn(),
+      active: true,
+    };
+    const { deps } = setup({ report: report(), recordScreen: vi.fn(() => handle) });
+    const h = mount(deps);
+    br<HTMLButtonElement>(h, 'record').click();
+    h.destroy();
+    expect(handle.stop).toHaveBeenCalled();
+  });
 });

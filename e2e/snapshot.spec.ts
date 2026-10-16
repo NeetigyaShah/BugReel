@@ -121,3 +121,126 @@ test('annotate snapshot → media attachment → .bugpack carries media/snapshot
 
   expect(pageErrors).toEqual([]);
 });
+
+test('T09b: dropzone attaches a file → .bugpack carries media/<name>', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (err) => pageErrors.push(String(err)));
+  await page.goto(fixture);
+  await openModal(page);
+  await expect(page.locator('[data-br="preview"]')).toContainText('What Happened', {
+    timeout: 15_000,
+  });
+
+  // Two files land via the picker input (same code path as a drop).
+  await page.locator('[data-br="file-input"]').setInputFiles([
+    { name: 'shot.png', mimeType: 'image/png', buffer: UPLOAD_PNG },
+    { name: 'capture.webm', mimeType: 'video/webm', buffer: Buffer.from([0x1a, 0x45]) },
+  ]);
+
+  await expect(page.locator('[data-br="media-item"]')).toHaveCount(2);
+  await expect(page.locator('[data-br="media-list"]')).toContainText('shot.png');
+  await expect(page.locator('[data-br="media-list"]')).toContainText('capture.webm');
+  // Aggregate size readout — "2 files · …".
+  await expect(page.locator('[data-br="media-size"]')).toContainText('2 files');
+  // The video attachment previews through a <video> element.
+  await expect(page.locator('[data-br="media-item"] video')).toHaveCount(1);
+
+  await page.locator('[data-br="trying"]').fill('attach files');
+  await page.locator('[data-br="wrong"]').fill('needed context');
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('[data-br="download"]').click();
+  const entries = unzipStore(await readFile((await (await downloadPromise).path())!));
+
+  expect(entries.get('media/shot.png')?.subarray(0, 4)).toEqual(Buffer.from(UPLOAD_PNG.subarray(0, 4)));
+  expect(entries.has('media/capture.webm')).toBe(true);
+  const report = JSON.parse(entries.get('report.json')!.toString('utf8')) as { media?: string[] };
+  expect(report.media).toEqual(expect.arrayContaining(['shot.png', 'capture.webm']));
+  expect(pageErrors).toEqual([]);
+});
+
+test('T09b: record button exists when MediaRecorder is present, hidden when absent', async ({
+  page,
+}) => {
+  await page.goto(fixture);
+  await openModal(page);
+  await expect(page.locator('[data-br="preview"]')).toContainText('What Happened', {
+    timeout: 15_000,
+  });
+  // Chromium headless ships both APIs → the button is offered.
+  await expect(page.locator('[data-br="record"]')).toBeVisible();
+});
+
+test('T09b: no MediaRecorder → record button omitted, dropzone remains', async ({ page }) => {
+  await page.addInitScript(() => {
+    // Simulate the iOS-Safari shape: no MediaRecorder at all.
+    (window as unknown as { MediaRecorder?: unknown }).MediaRecorder = undefined;
+  });
+  await page.goto(fixture);
+  await openModal(page);
+  await expect(page.locator('[data-br="preview"]')).toContainText('What Happened', {
+    timeout: 15_000,
+  });
+  await expect(page.locator('[data-br="record"]')).toBeHidden();
+  await expect(page.locator('[data-br="dropzone"]')).toBeVisible();
+});
+
+test('T09b: stubbed screen recorder produces media/screen-recording.webm', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (err) => pageErrors.push(String(err)));
+  // Spec-faithful stubs — dataavailable/stop fire as queued TASKS, matching
+  // real MediaRecorder behavior (this is the ordering that regressed once).
+  await page.addInitScript(() => {
+    const CHUNK = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0xde, 0xad]);
+    class FakeMR {
+      static isTypeSupported(): boolean {
+        return true;
+      }
+      mimeType = 'video/webm';
+      ondataavailable: ((e: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      onerror: ((e: unknown) => void) | null = null;
+      constructor(_stream: unknown, _opts?: unknown) {}
+      start(): void {}
+      stop(): void {
+        setTimeout(() => {
+          this.ondataavailable?.({ data: new Blob([CHUNK]) });
+          this.onstop?.();
+        }, 20);
+      }
+    }
+    const w = window as unknown as { MediaRecorder?: unknown; navigator: Navigator };
+    w.MediaRecorder = FakeMR;
+    // navigator.mediaDevices is a getter-only property — assignment is a
+    // silent no-op; defineProperty is the only way to stub it.
+    Object.defineProperty(w.navigator, 'mediaDevices', {
+      value: { getDisplayMedia: async () => ({ getTracks: () => [{ stop() {} }] }) },
+      configurable: true,
+    });
+  });
+
+  await page.goto(fixture);
+  await openModal(page);
+  await expect(page.locator('[data-br="preview"]')).toContainText('What Happened', {
+    timeout: 15_000,
+  });
+
+  const record = page.locator('[data-br="record"]');
+  await expect(record).toBeVisible();
+  await record.click();
+  await expect(record).toContainText('Stop');
+  await record.click(); // early stop — async stop path resolves the clip
+
+  await expect(page.locator('[data-br="media-list"]')).toContainText('screen-recording.webm', {
+    timeout: 10_000,
+  });
+
+  await page.locator('[data-br="trying"]').fill('record the screen');
+  await page.locator('[data-br="wrong"]').fill('video evidence needed');
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('[data-br="download"]').click();
+  const entries = unzipStore(await readFile((await (await downloadPromise).path())!));
+  const webm = entries.get('media/screen-recording.webm');
+  expect(webm).toBeTruthy();
+  expect([...webm!.subarray(0, 4)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]); // EBML magic
+  expect(pageErrors).toEqual([]);
+});

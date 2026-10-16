@@ -8,6 +8,13 @@ import {
   type SnapshotImage,
   type SnapshotWindow,
 } from './snapshot';
+import {
+  isScreenRecordingSupported,
+  recordScreen,
+  type RecordingHandle,
+  type RecorderWindow,
+  RECORD_MAX_MS,
+} from './recorder';
 import { dispatchWebhook, type WebhookFetch } from './webhook';
 import { guard, uuid } from './util';
 import type {
@@ -39,7 +46,10 @@ export interface ModalWindow extends EventTargetLike {
   navigator?: {
     userAgent?: string;
     clipboard?: { writeText?(text: string): Promise<unknown> };
+    mediaDevices?: { getDisplayMedia?(constraints?: unknown): Promise<unknown> };
   };
+  /** `window.MediaRecorder` — capability-checked before use. */
+  MediaRecorder?: unknown;
   indexedDB?: IDBFactory;
   customElements?: { get?(name: string): unknown; define?(name: string, ctor: unknown): void };
   HTMLElement?: unknown;
@@ -72,6 +82,17 @@ export interface ModalDeps {
   captureSnapshot?(win: ModalWindow): Promise<Uint8Array | undefined>;
   decodeImage?(bytes: Uint8Array): Promise<SnapshotImage | undefined>;
   createAnnotator?(opts: AnnotatorOptions): AnnotatorHandle | undefined;
+  /**
+   * Screen-recorder factory (T09b) — injectable so tests exercise the
+   * recording UI without MediaRecorder. Absent → the browser capability
+   * check decides whether the Record button exists at all.
+   */
+  recordScreen?(win: ModalWindow): RecordingHandle | undefined;
+  /**
+   * File→bytes seam for the attachment picker/dropzone — injectable for
+   * tests; defaults to `file.arrayBuffer()`.
+   */
+  readFileBytes?(file: unknown): Promise<Uint8Array | undefined>;
   /**
    * Mode-2 webhook target (T10, ADR-0006). When set, submit dispatches through
    * `dispatchWebhook` instead of the IndexedDB save. The URL may carry a
@@ -170,6 +191,10 @@ const SKELETON = `<style>
 .br-media-btn{margin-left:auto;padding:6px 10px;font-size:13px}
 .br-media-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .br-media-list:empty{margin:0}
+.br-media-size{margin-left:auto;font-size:11px;color:#6b7280}
+.br-dropzone{margin-top:8px;padding:10px;border:1px dashed #d1d5db;border-radius:8px;text-align:center;font-size:12px;color:#6b7280;cursor:pointer}
+.br-dropzone.br-over{border-color:#4f46e5;background:#eef2ff;color:#3730a3}
+.br-media-item video{width:100%;height:72px;object-fit:cover;border-radius:4px;background:#000;display:block}
 .br-media-item{position:relative;width:120px;border:1px solid #e5e7eb;border-radius:8px;padding:4px;background:#fff}
 .br-media-item img{display:block;width:100%;height:72px;object-fit:cover;border-radius:4px;background:#f3f4f6}
 .br-media-item span{display:block;margin-top:4px;font-size:11px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -203,8 +228,13 @@ const SKELETON = `<style>
       <div class="br-media" data-br="media">
         <div class="br-media-bar">
           <span class="br-media-title">Attachments</span>
+          <span class="br-media-size" data-br="media-size"></span>
           <button class="br-btn br-media-btn" type="button" data-br="annotate">Annotate snapshot</button>
+          <button class="br-btn br-media-btn" type="button" data-br="attach">Attach files</button>
+          <button class="br-btn br-media-btn" type="button" data-br="record">Record screen</button>
         </div>
+        <div class="br-dropzone" data-br="dropzone">Drop images or videos here, or use the buttons above</div>
+        <input type="file" multiple accept="image/*,video/*" data-br="file-input" class="br-hidden" />
         <div class="br-media-list" data-br="media-list"></div>
       </div>
     </div>
@@ -313,6 +343,23 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
 
   /* ------------------------- T09a media ------------------------- */
   const annotateBtn = q<{ disabled: boolean; addEventListener?: AnyFn }>('annotate');
+  const attachBtn = q<{ disabled: boolean; addEventListener?: AnyFn }>('attach');
+  const recordBtn = q<{
+    disabled: boolean;
+    textContent?: string | null;
+    classList?: { toggle(c: string, on: boolean): void };
+  }>('record');
+  const dropzoneEl = q<{
+    classList: { toggle(c: string, on: boolean): void };
+    addEventListener?: AnyFn;
+  }>('dropzone');
+  const fileInput = q<{
+    click(): void;
+    files?: ArrayLike<unknown>;
+    value?: string;
+    addEventListener?: AnyFn;
+  }>('file-input');
+  const mediaSizeEl = q<{ textContent?: string | null }>('media-size');
   const mediaListEl = q<{
     replaceChildren(...nodes: unknown[]): void;
     addEventListener?: AnyFn;
@@ -326,6 +373,9 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
   let mediaEntries: BugpackMediaEntry[] = [];
   let annotator: AnnotatorHandle | undefined;
   let annotating = false;
+  /** Active screen-recording handle (T09b) — at most one at a time. */
+  let recording: RecordingHandle | undefined;
+  let recordTicker: ReturnType<typeof setInterval> | undefined;
   const mediaUrls: string[] = [];
 
   /* ------------------------- state ------------------------- */
@@ -496,12 +546,12 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
   };
 
   /** Thumbnail URL for a media entry: blob URL preferred, data URL fallback. */
-  const mediaThumbUrl = (bytes: Uint8Array): string | undefined => {
+  const mediaThumbUrl = (bytes: Uint8Array, mimeType = 'image/png'): string | undefined => {
     try {
       const U =
         (win as { URL?: { createObjectURL?(b: Blob): string } }).URL ??
         (URL as { createObjectURL?(b: Blob): string });
-      const url = U?.createObjectURL?.(new Blob([bytes as unknown as BlobPart], { type: 'image/png' }));
+      const url = U?.createObjectURL?.(new Blob([bytes as unknown as BlobPart], { type: mimeType }));
       if (url) {
         mediaUrls.push(url);
         return url;
@@ -530,8 +580,21 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
           append(...k: unknown[]): void;
         };
         item.setAttribute?.('data-br', 'media-item');
-        const url = mediaThumbUrl(m.data);
-        if (url) {
+        const isVideo = String(m.mimeType ?? '').startsWith('video/');
+        const url = mediaThumbUrl(m.data, m.mimeType || 'image/png');
+        if (url && isVideo) {
+          const v = createElement('video') as {
+            src?: string;
+            muted?: boolean;
+            playsInline?: boolean;
+            preload?: string;
+          };
+          v.src = url;
+          v.muted = true;
+          v.playsInline = true;
+          v.preload = 'metadata';
+          item.append(v);
+        } else if (url) {
           const img = createElement('img') as { src?: string; alt?: string };
           img.src = url;
           img.alt = m.name;
@@ -548,6 +611,7 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
         kids.push(item);
       }
       mediaListEl.replaceChildren(...kids);
+      updateMediaSize();
     } catch {}
   };
 
@@ -577,6 +641,204 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
     renderMedia();
     setStatus('Annotated snapshot attached.');
   };
+
+  /* ------------------------- T09b attachments ------------------------- */
+
+  /** Per-file cap — big enough for a 15s webm, small enough to keep a pack sane. */
+  const MAX_ATTACH_BYTES = 20 * 1024 * 1024;
+  const ATTACH_ACCEPT = /^(?:image|video)\//i;
+
+  const formatBytes = (n: number): string =>
+    n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+
+  /** Aggregate attachment size — feeds the header readout; the webhook's
+   *  7.5MB guard sees the same bytes through the packed media/. */
+  const totalMediaBytes = (): number =>
+    mediaEntries.reduce((sum, m) => sum + (m?.data?.byteLength ?? 0), 0);
+
+  const updateMediaSize = (): void => {
+    try {
+      if (!mediaSizeEl) return;
+      mediaSizeEl.textContent = mediaEntries.length
+        ? `${mediaEntries.length} file${mediaEntries.length === 1 ? '' : 's'} · ${formatBytes(totalMediaBytes())}`
+        : '';
+    } catch {}
+  };
+
+  /** MIME guess for files that report an empty type — extension-derived. */
+  const mimeFromName = (name: string): string =>
+    /\.webm$/i.test(name)
+      ? 'video/webm'
+      : /\.(?:mp4|mov|m4v)$/i.test(name)
+        ? 'video/mp4'
+        : /\.jpe?g$/i.test(name)
+          ? 'image/jpeg'
+          : 'image/png';
+
+  /** Zip-safe + collision-free media name (the worker re-sanitizes on pack). */
+  const dedupeMediaName = (name: string): string => {
+    // Keep UTF-8 names intact (the archive sets GP bit 11 for them) — strip
+    // only separators, controls, and zip-hostile characters. The worker's
+    // sanitizeEntryName remains the traversal safety net.
+    const base =
+      name
+        .split(/[\\/]/)
+        .pop()
+        ?.replace(/[ -<>"|?*]+/g, '_')
+        .trim() || 'attachment';
+    let candidate = base;
+    for (let i = 2; mediaEntries.some((m) => m.name === candidate); i++) {
+      const dot = base.lastIndexOf('.');
+      candidate =
+        dot > 0 ? `${base.slice(0, dot)} (${i})${base.slice(dot)}` : `${base} (${i})`;
+    }
+    return candidate;
+  };
+
+  const addMedia = (name: string, mimeType: string, data: Uint8Array): void => {
+    mediaEntries = [
+      ...mediaEntries,
+      { name: dedupeMediaName(name), mimeType: mimeType || 'application/octet-stream', data },
+    ];
+    renderMedia();
+  };
+
+  /**
+   * Image/video files only, ≤20MB each — everything else is rejected with an
+   * honest status rather than silently dropped.
+   */
+  const addFiles = guard(async (files: ArrayLike<unknown> | null | undefined): Promise<void> => {
+    // Attachments only belong to an editable report — a late attach would
+    // silently miss an already-sent pack.
+    if (phase === 'submitting' || phase === 'submitted') return;
+    const picked = Array.from(files ?? []);
+    if (!picked.length) return;
+    let added = 0;
+    let rejected = 0;
+    for (const f of picked) {
+      const file = f as {
+        name?: string;
+        type?: string;
+        size?: number;
+        arrayBuffer?(): Promise<ArrayBuffer>;
+      } | null;
+      const type = String(file?.type ?? '');
+      // Some pickers report an empty MIME — fall back to the extension.
+      const name = String(file?.name ?? '');
+      const looksMedia =
+        ATTACH_ACCEPT.test(type) ||
+        (!type && /\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)$/i.test(name));
+      if (!file || !looksMedia || (file.size ?? 0) > MAX_ATTACH_BYTES) {
+        rejected++;
+        continue;
+      }
+      let bytes: Uint8Array | undefined;
+      try {
+        bytes = deps.readFileBytes
+          ? await deps.readFileBytes(f)
+          : file.arrayBuffer
+            ? new Uint8Array(await file.arrayBuffer())
+            : undefined;
+      } catch {
+        bytes = undefined;
+      }
+      if (!bytes?.byteLength) {
+        rejected++;
+        continue;
+      }
+      addMedia(String(file.name || 'attachment'), type || mimeFromName(name), bytes);
+      added++;
+    }
+    if (added) {
+      setStatus(added === 1 ? 'Attachment added.' : `${added} attachments added.`);
+    }
+    if (rejected) {
+      setStatus(
+        `${rejected} file${rejected === 1 ? '' : 's'} skipped — images and videos up to ${formatBytes(MAX_ATTACH_BYTES)} only.`,
+        true,
+      );
+    }
+  });
+
+  /** Reset the Record button label/state once a recording ends. */
+  const resetRecordBtn = (): void => {
+    try {
+      if (recordBtn) {
+        recordBtn.disabled = false;
+        recordBtn.textContent = 'Record screen';
+      }
+    } catch {}
+    if (recordTicker) {
+      clearInterval(recordTicker);
+      recordTicker = undefined;
+    }
+  };
+
+  const stopRecording = (): void => {
+    try {
+      recording?.stop();
+    } catch {}
+    recording = undefined;
+    resetRecordBtn();
+  };
+
+  /**
+   * "Record screen" — capability-gated 15s getDisplayMedia+MediaRecorder
+   * clip. The button is hidden entirely where the APIs are absent (iOS
+   * Safari → the dropzone/file picker covers that case). One recording at a
+   * time; clicking again stops early.
+   */
+  const recordAction = guard(async (): Promise<void> => {
+    if (phase === 'submitting' || phase === 'submitted') return;
+    if (recording) {
+      recording.stop();
+      return;
+    }
+    const factory =
+      deps.recordScreen ??
+      ((w: ModalWindow) => recordScreen(w as unknown as RecorderWindow));
+    const handle = factory(win);
+    if (!handle) {
+      setStatus('Screen recording is not supported here — attach a video file instead.', true);
+      return;
+    }
+    recording = handle;
+    try {
+      if (recordBtn) recordBtn.textContent = 'Stop recording';
+      const started = now();
+      recordTicker = setInterval(() => {
+        try {
+          const left = Math.max(
+            0,
+            Math.ceil(RECORD_MAX_MS / 1000 - (now() - started) / 1000),
+          );
+          if (recordBtn && recording) recordBtn.textContent = `Stop recording (${left}s)`;
+        } catch {}
+      }, 500);
+    } catch {}
+    setStatus(`Recording screen — click Stop or wait ${RECORD_MAX_MS / 1000}s.`);
+    try {
+      const result = await handle.done;
+      recording = undefined;
+      resetRecordBtn();
+      // A recording that resolved after destroy must not write into the
+      // detached tree or mint unrevocable object URLs.
+      if (destroyed) return;
+      if (result?.bytes.byteLength) {
+        addMedia('screen-recording.webm', result.mimeType || 'video/webm', result.bytes);
+        setStatus('Screen recording attached.');
+      } else {
+        setStatus('Screen recording produced no video — cancelled or unsupported.', true);
+      }
+    } catch {
+      // An injected handle whose `done` rejects shouldn't wedge the UI.
+      recording = undefined;
+      resetRecordBtn();
+      if (!destroyed) {
+        setStatus('Screen recording failed — cancelled or unsupported.', true);
+      }
+    }
+  });
 
   /**
    * "Annotate snapshot" — capture through the fallback chain, decode, then
@@ -998,6 +1260,68 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
   on(annotateBtn as EventTargetLike | undefined, 'click', annotateAction);
   on(mediaListEl as EventTargetLike | undefined, 'click', removeMediaClick);
 
+  /* ------- T09b: file attachments + screen recorder wiring ------- */
+  // The Record button exists only where getDisplayMedia+MediaRecorder work —
+  // on iOS Safari the dropzone/file picker is the documented path instead.
+  const canRecord =
+    deps.recordScreen !== undefined ||
+    isScreenRecordingSupported(win as unknown as RecorderWindow);
+  try {
+    if (!canRecord) recordBtn?.classList?.toggle('br-hidden', true);
+  } catch {}
+
+  const pickFiles = (): void => {
+    try {
+      fileInput?.click();
+    } catch {}
+  };
+  on(attachBtn as EventTargetLike | undefined, 'click', pickFiles);
+  on(dropzoneEl as EventTargetLike | undefined, 'click', pickFiles);
+  on(recordBtn as EventTargetLike | undefined, 'click', recordAction);
+  on(fileInput as EventTargetLike | undefined, 'change', () => {
+    try {
+      void addFiles(fileInput?.files);
+      // Reset so picking the same file twice still fires `change`.
+      if (fileInput) fileInput.value = '';
+    } catch {}
+  });
+  const dropEventFiles = (e: unknown): ArrayLike<unknown> | undefined => {
+    try {
+      return (e as { dataTransfer?: { files?: ArrayLike<unknown> } })?.dataTransfer?.files;
+    } catch {
+      return undefined;
+    }
+  };
+  // The modal covers the viewport while open — a drop missed outside the
+  // dropzone would otherwise make the browser OPEN the file: full-page
+  // navigation away from the host app, report and all. Cancel both events
+  // on the whole host so only the dropzone accepts files.
+  const swallowDrop = (e: Event): void => {
+    try {
+      (e as { preventDefault?(): void }).preventDefault?.();
+    } catch {}
+  };
+  on(el, 'dragover', swallowDrop as AnyFn);
+  on(el, 'drop', swallowDrop as AnyFn);
+  on(dropzoneEl as EventTargetLike | undefined, 'dragover', (e: Event) => {
+    try {
+      (e as { preventDefault?(): void }).preventDefault?.();
+      dropzoneEl?.classList.toggle('br-over', true);
+    } catch {}
+  });
+  on(dropzoneEl as EventTargetLike | undefined, 'dragleave', () => {
+    try {
+      dropzoneEl?.classList.toggle('br-over', false);
+    } catch {}
+  });
+  on(dropzoneEl as EventTargetLike | undefined, 'drop', (e: Event) => {
+    try {
+      (e as { preventDefault?(): void }).preventDefault?.();
+      dropzoneEl?.classList.toggle('br-over', false);
+    } catch {}
+    void addFiles(dropEventFiles(e));
+  });
+
   try {
     (doc.body ?? (doc.documentElement as { appendChild?(e: unknown): unknown } | undefined))
       ?.appendChild?.(el);
@@ -1029,6 +1353,7 @@ export const mountModal = (deps: ModalDeps = {}): ModalHandle | undefined => {
       }
       closeAnnotator(); // T09a
       releaseMediaUrls(); // T09a
+      stopRecording(); // T09b — tracks + ticker must not outlive the modal
       try {
         (el as { remove?: () => void }).remove?.();
       } catch {}

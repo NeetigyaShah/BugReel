@@ -228,6 +228,9 @@ test('T09b: stubbed screen recorder produces media/screen-recording.webm', async
   await expect(record).toBeVisible();
   await record.click();
   await expect(record).toContainText('Stop');
+  // Let the stub's async getDisplayMedia grant deliver the recorder instance
+  // — clicking Stop in that window resolves with no clip (honest cancel).
+  await page.waitForTimeout(200);
   await record.click(); // early stop — async stop path resolves the clip
 
   await expect(page.locator('[data-br="media-list"]')).toContainText('screen-recording.webm', {

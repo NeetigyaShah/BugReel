@@ -94,7 +94,7 @@ test('Slack webhook receives CORS-safe text/plain Block Kit and the bugpack down
   });
 
   // The local download fires inside dispatch — arm the listener before submit.
-  let downloadPromise: ReturnType<typeof page.waitForEvent> | undefined;
+  let downloadPromise: Promise<import('@playwright/test').Download> | undefined;
   await openAndSubmit(page, 'https://hooks.slack.com/services/T00000/B00000/xxx', () => {
     downloadPromise = page.waitForEvent('download', { timeout: 15_000 });
   });

@@ -56,7 +56,7 @@ test('demo loads the real SDK via script tag: BugReel global, capture chunk, pil
 
   await expect(page).toHaveTitle(/Pulseboard/);
   await expect
-    .poll(() => page.evaluate(() => typeof (window as { BugReel?: unknown }).BugReel?.init))
+    .poll(() => page.evaluate(() => typeof (window as { BugReel?: { init?: unknown } }).BugReel?.init))
     .toBe('function');
   await expect
     .poll(() =>

@@ -264,7 +264,12 @@ export class FakeDomElement {
 
   closest(selectors: string): FakeDomElement | null {
     const tests = selectors.split(',').map((part) => {
-      const [, name, value] = /^\[([\w-]+)(?:=(\w+)(?: i)?)?\]$/.exec(part.trim())!;
+      const p = part.trim();
+      if (/^[\w-]+$/.test(p)) {
+        const tag = p.toUpperCase();
+        return (node: FakeDomElement) => node.tagName === tag;
+      }
+      const [, name, value] = /^\[([\w-]+)(?:=(\w+)(?: i)?)?\]$/.exec(p)!;
       return (node: FakeDomElement) => {
         const actual = node.getAttribute(name!);
         return value === undefined ? actual !== null : actual?.toLowerCase() === value;

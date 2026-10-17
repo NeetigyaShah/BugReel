@@ -39,6 +39,34 @@ afterEach(() => {
 });
 
 describe('click capture', () => {
+  it("produces no events for BugReel's own chrome (modal/pill hosts)", () => {
+    const { sink } = makeSensor();
+    // Composed shadow events retarget to the host element — clicking Submit
+    // inside <bugreel-modal> must not become a user click (or a phantom
+    // dead-click finding when its liveness watch closes).
+    // element.closest() includes the element itself for matching selectors.
+    const selfChrome = (tag: string) => ({
+      closest: (sel: string) => (sel.toLowerCase().includes(tag) ? {} : null),
+    });
+    win.fire('click', {
+      target: el('BUGREEL-MODAL', selfChrome('bugreel-modal')),
+      clientX: 1,
+      clientY: 1,
+    });
+    win.fire('click', {
+      target: el('bugreel-pill', selfChrome('bugreel-pill')),
+      clientX: 1,
+      clientY: 1,
+    });
+    // A light-DOM child inside the host is self-chrome too (closest match).
+    win.fire('click', {
+      target: el('BUTTON', selfChrome('bugreel-modal')),
+    });
+    expect(sink.events).toHaveLength(0);
+    vi.advanceTimersByTime(CLICK_WATCH_MS + 100);
+    expect(sink.events).toHaveLength(0); // no pending annotate either
+  });
+
   it('emits a click event with id, timestamp, resolved target and coordinates', () => {
     const { sink } = makeSensor();
     win.fire('click', { target: el('BUTTON'), clientX: 12, clientY: 34 });

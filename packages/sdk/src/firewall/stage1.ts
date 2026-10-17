@@ -21,7 +21,11 @@ const BLOCKED_TYPE = /^(?:password|hidden|file)$/;
 const SENSITIVE_AUTOCOMPLETE = /(?:^|\s)(?:cc-|current-password|new-password|one-time-code)/;
 const SENSITIVE_ATTR = /pass|pwd|secret|token|key|auth|cvv|cvc|ssn|tax_id|card|pin|otp/;
 const FORM_CONTROL = /^(?:input|textarea|select)$/i;
-const MASKED = '[data-bugreel=mask i],[data-sensitive]';
+// MASKED also names BugReel's own chrome: composed shadow events retarget
+// to the host element, and a reporter clicking Submit inside bugreel-modal
+// must not become a user click (phantom Dead Click findings, answers in
+// the story). Being ours IS a reason it produces no events.
+const MASKED = '[data-bugreel=mask i],[data-sensitive],bugreel-modal,bugreel-pill';
 const ALLOWED = '[data-bugreel=allow i]';
 const KEYWORD_ATTRS = ['name', 'id', 'placeholder', 'aria-label'];
 

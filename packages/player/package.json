@@ -1,23 +1,45 @@
 {
   "name": "@bugreel/player",
   "version": "0.1.0",
-  "description": "BugReel .bugpack timeline player — <bugreel-player> custom element",
+  "description": "BugReel .bugpack timeline player — <bugreel-player> custom element + standalone player.html",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "unpkg": "./dist/player.global.js",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./dist/*": "./dist/*",
+    "./player.html": "./player.html",
+    "./package.json": "./package.json"
   },
-  "files": ["dist", "player.html"],
+  "files": ["dist", "player.html", "README.md", "LICENSE"],
   "dependencies": {
     "@bugreel/sdk": "workspace:*"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NeetigyaShah/BugReel.git",
+    "directory": "packages/player"
+  },
+  "homepage": "https://github.com/NeetigyaShah/BugReel#readme",
+  "bugs": "https://github.com/NeetigyaShah/BugReel/issues",
+  "keywords": [
+    "bug-report",
+    "bugpack",
+    "timeline",
+    "custom-element",
+    "developer-tools"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm build"
   }
 }

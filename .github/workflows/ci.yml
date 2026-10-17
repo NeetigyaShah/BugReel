@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pnpm
+        uses: pnpm/action-setup@v4
+        # Version comes from root package.json `packageManager`.
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Build
+        run: pnpm build
+
+      # Typecheck runs after build: @bugreel/* resolves via exports → dist/*.d.ts,
+      # which only exists once the workspace is built.
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Loader size budget (≤3.5KB gzipped)
+        run: pnpm size-check
+
+      - name: Unit tests
+        run: pnpm test:unit
+
+      - name: E2E (Playwright over the demo app)
+        run: pnpm exec playwright test
+        env:
+          CI: '1'
+
+      - name: Upload e2e artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: test-results/
+          if-no-files-found: ignore

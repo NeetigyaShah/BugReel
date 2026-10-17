@@ -1,24 +1,49 @@
 {
   "name": "@bugreel/sdk",
   "version": "0.1.0",
-  "description": "Deterministic in-app bug-reporting sensor — Zero-AI, <4KB loader",
+  "description": "Deterministic in-app bug-reporting SDK — Zero-AI, <4KB loader, ~60s event window, .bugpack reports",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "unpkg": "./dist/loader.global.js",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    }
+    },
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json"
   },
-  "files": ["dist"],
+  "files": ["dist", "README.md", "LICENSE"],
   "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NeetigyaShah/BugReel.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/NeetigyaShah/BugReel#readme",
+  "bugs": "https://github.com/NeetigyaShah/BugReel/issues",
+  "keywords": [
+    "bug-report",
+    "bug-reporting",
+    "session-replay",
+    "deterministic",
+    "zero-ai",
+    "error-monitoring",
+    "developer-tools",
+    "web-worker",
+    "shadow-dom"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "pnpm build"
   }
 }
